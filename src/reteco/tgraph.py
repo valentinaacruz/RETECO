@@ -24,13 +24,14 @@ import numpy as np
 import scipy.sparse as sp
 
 from reteco.data import EXP_DIR
-from reteco.temporal import TimeSpan, ancestors, extract_spans, parse_normalized, span_nodes
+from reteco.temporal import URL_RE, TimeSpan, ancestors, extract_spans, parse_normalized, span_nodes
 
 TG_DIR = EXP_DIR / "tgrag"
 CHUNK_WORDS = 800       # ~1,150 tokens: el chunk de 1,200 tokens del paper
 MAX_CHUNKS = 4          # como en reteco.dense: se cubre el inicio de los documentos largos
 MAX_SENTENCES = 80      # por chunk (extractor de reglas)
 MAX_ENTITIES = 6        # por oración
+MAX_ENTITY_TOKENS = 5   # sin contar conectores; más largas suelen ser títulos o referencias fusionadas
 MAX_TIMES = 3           # por oración
 DESC_CHARS = 400
 
@@ -64,9 +65,28 @@ def chunk_text(text: str) -> list[str]:
 # ----------------------------------------------------------------------------- extractor de reglas
 
 _SENT_RE = re.compile(r"(?<=[.!?])\s+(?=[\"“'(\[]?[A-Z0-9])|\s*\n+\s*")
-_TOKEN_RE = re.compile(r"[A-Za-zÀ-ÖØ-öø-ÿ][\w'’&-]*")
-_CONNECTORS = {"of", "the", "de", "la", "le", "del", "von", "van", "der", "den", "du", "di", "da", "and", "&", "y", "al", "bin", "ibn"}
-_STOP_CAPS = {
+# Acrónimos con puntos ("U.S.", "J.D.") como un solo token; si no, palabras.
+_TOKEN_RE = re.compile(r"(?:[A-Z]\.){2,}|[A-Za-zÀ-ÖØ-öø-ÿ][\w'’&-]*")
+# Conectores que pueden ir dentro de un nombre ("Bank of England", "Leonardo da Vinci").
+# Sin "and", "&" ni "y": unían nombres distintos ("Tyler and Cameron Winklevoss").
+_CONNECTORS = {"of", "the", "de", "la", "le", "del", "von", "van", "der", "den", "du", "di", "da", "al", "bin", "ibn"}
+# Tratamientos: "Mr. Smith" → SMITH (el punto corta la entidad y el tratamiento se descarta).
+_TITLES = {"mr", "mrs", "ms", "dr", "prof", "sir", "st", "jr", "sr", "rev", "gen", "col", "capt", "lt", "hon"}
+# Palabras de discurso que abren oraciones y no son nombres ("Finally, …", "Another …").
+_DISCOURSE = {
+    "another", "finally", "moreover", "furthermore", "further", "firstly", "secondly", "thirdly", "lastly",
+    "consequently", "hence", "therefore", "accordingly", "additionally", "similarly", "likewise", "otherwise",
+    "besides", "meanwhile", "instead", "indeed", "nevertheless", "nonetheless", "overall", "specifically",
+    "generally", "typically", "notably", "importantly", "interestingly", "unfortunately", "fortunately",
+    "recently", "currently", "previously", "initially", "eventually", "ultimately", "subsequently", "still",
+    "yet", "even", "just", "only", "perhaps", "maybe", "please", "thank", "thanks", "according", "despite",
+    "unlike", "like", "using", "given", "based", "following", "regarding", "including", "whether", "every",
+    "any", "few", "several", "more", "less", "much", "very", "let", "once", "prior", "two", "three", "four",
+    "five", "six", "seven", "eight", "nine", "ten", "current", "fixed", "added", "removed", "updated",
+    "understanding", "consider", "imagine", "suppose", "note", "example", "e.g", "i.e", "yes", "ok", "okay",
+    "hi", "hello", "dear", "welcome", "great", "good", "nice", "sure", "well", "oh", "wow",
+}
+_STOP_CAPS = _DISCOURSE | _TITLES | {
     "i", "a", "an", "the", "this", "that", "these", "those", "it", "its", "he", "she", "they", "we", "you", "his", "her",
     "their", "our", "my", "your", "in", "on", "at", "for", "but", "and", "or", "if", "when", "where", "while", "as", "by",
     "with", "from", "to", "of", "after", "before", "during", "since", "until", "there", "here", "what", "which", "who",
@@ -80,23 +100,96 @@ _STOP_CAPS = {
 
 
 def normalize_entity(name: str) -> str:
-    """Nombre canónico de una entidad: mayúsculas, sin posesivo ni puntuación de borde."""
+    """Nombre canónico de una entidad: mayúsculas, sin posesivo, sin puntos de acrónimo ni puntuación de borde."""
     name = re.sub(r"['’]s\b", "", name.strip())
+    name = re.sub(r"\b([A-Z])\.(?=[A-Z]\.|\s|$)", r"\1", name)       # "U.S." → "US", "J.D. Dean" → "JD Dean"
     name = re.sub(r"\s+", " ", name).strip(" .,;:-'\"“”()[]")
     return name.upper()
 
 
-def rule_entities(sentence: str) -> list[str]:
-    """Secuencias capitalizadas (con conectores internos como "of", "de") y acrónimos."""
-    tokens = [(m.group(), m.start()) for m in _TOKEN_RE.finditer(sentence)]
+# ----------------------------------------------------------------------------- filtros de oración
+# Ver REVISION_EXTRACCION_TGRAG.md §3.4.
+
+_BBCODE_RE = re.compile(r"\[/?(?:url|b|i|img|link|quote|code)\b", re.IGNORECASE)
+# Sin ";" final: las enumeraciones legales terminan así ("…shall report;").
+_CODE_RE = re.compile(r"//|/\*|\*/|#include|\bdef\s+\w+\(|\breturn\b.*;|[{}]\s*$|=>|->|==|!=|\+=|&&|\|\|")
+_CODE_CHARS = set("{}[]<>=;|\\/*+#$@~^`")
+
+
+def is_prose(sentence: str) -> bool:
+    """¿Es texto en prosa? Descarta spam con BBCode, código y líneas casi todo en mayúsculas.
+
+    - BBCode (``[url=…]``, ``[b]``): spam de foros; las entidades y fechas son basura.
+    - Código: marcas típicas (``//``, ``==``, ``=>``, ``;`` final…) o >10 % de símbolos.
+    - Mayúsculas: con ≥ 20 letras, más del 60 % en mayúscula (titulares, cabeceras de tabla,
+      volcados de ensamblador). Ahí la heurística de "palabra capitalizada = nombre" no vale.
+    """
+    if _BBCODE_RE.search(sentence):
+        return False
+    text = URL_RE.sub(" ", sentence)              # "http://" no debe contar como comentario "//"
+    if _CODE_RE.search(text):
+        return False
+    stripped = text.replace(" ", "")
+    if stripped and sum(c in _CODE_CHARS for c in stripped) / len(stripped) > 0.10:
+        return False
+    letters = [c for c in text if c.isalpha()]
+    return not (len(letters) >= 20 and sum(c.isupper() for c in letters) / len(letters) > 0.60)
+
+
+def mid_sentence_caps(sentences: list[str]) -> set[str]:
+    """Palabras que aparecen capitalizadas en mitad de alguna oración (en minúsculas).
+
+    Sirve para decidir si la primera palabra de una oración es un nombre: "Monero is…"
+    se acepta si "Monero" aparece capitalizada en otra posición del mismo chunk; "Another
+    crisis…" no.
+    """
+    seen = set()
+    for sent in sentences:
+        for m in list(_TOKEN_RE.finditer(sent))[1:]:
+            tok = m.group()
+            if tok[0].isupper():
+                seen.add(tok.lower())
+    return seen
+
+
+def _gap_breaks(gap: str, prev_tok: str) -> bool:
+    """¿Corta la entidad el texto entre dos tokens? Cualquier puntuación corta, salvo el
+    punto de una inicial ("John F. Kennedy")."""
+    if gap.strip() == "":
+        return False
+    return not (gap.strip() == "." and len(prev_tok) == 1 and prev_tok.isupper())
+
+
+def rule_entities(sentence: str, known: set[str] | None = None) -> list[str]:
+    """Secuencias capitalizadas (con conectores internos como "of", "de") y acrónimos.
+
+    Args:
+        sentence: oración (las URLs se ignoran).
+        known: palabras vistas capitalizadas en mitad de oración en el mismo chunk
+            (``mid_sentence_caps``). Si se da, una entidad de **una sola palabra** al
+            inicio de la oración solo se acepta si está en ``known`` o es un acrónimo.
+            Con ``None`` se mantiene el comportamiento anterior (solo listas de exclusión).
+
+    Reglas (REVISION_EXTRACCION_TGRAG.md §3.4):
+        - la puntuación entre tokens corta la entidad (comas, punto y coma, paréntesis…);
+        - "and" / "&" no unen nombres;
+        - se quitan del inicio palabras de discurso, tratamientos y palabras vacías;
+        - se descartan entidades de más de ``MAX_ENTITY_TOKENS`` palabras (sin conectores).
+    """
+    sentence = URL_RE.sub(lambda m: " " * len(m.group()), sentence)
+    tokens = [(m.group(), m.start(), m.end()) for m in _TOKEN_RE.finditer(sentence)]
     ents, cur = [], []
-    for i, (tok, _) in enumerate(tokens):
+    for i, (tok, s, _) in enumerate(tokens):
+        if cur and _gap_breaks(sentence[tokens[i - 1][2]:s], tokens[i - 1][0]):
+            ents.append(cur)
+            cur = []
         if tok[0].isupper():
-            cur.append(tok)
+            cur.append((tok, i))
             continue
-        nxt = tokens[i + 1][0] if i + 1 < len(tokens) else ""
-        if cur and tok.lower() in _CONNECTORS and nxt[:1].isupper():
-            cur.append(tok)
+        nxt = tokens[i + 1] if i + 1 < len(tokens) else None
+        if (cur and tok.lower() in _CONNECTORS and nxt is not None and nxt[0][:1].isupper()
+                and not _gap_breaks(sentence[tokens[i][2]:nxt[1]], tok)):
+            cur.append((tok, i))
             continue
         if cur:
             ents.append(cur)
@@ -105,41 +198,52 @@ def rule_entities(sentence: str) -> list[str]:
         ents.append(cur)
     out = []
     for toks in ents:
-        while toks and toks[0].lower() in _STOP_CAPS:
+        while toks and toks[0][0].lower() in _STOP_CAPS:
             toks = toks[1:]
-        while toks and toks[-1].lower() in _CONNECTORS:
+        while toks and toks[-1][0].lower() in _CONNECTORS:
             toks = toks[:-1]
         if not toks:
             continue
-        name = normalize_entity(" ".join(toks))
-        if len(name) < 2 or (len(toks) == 1 and toks[0].lower() in _STOP_CAPS):
+        words = [t for t, _ in toks]
+        if sum(w.lower() not in _CONNECTORS for w in words) > MAX_ENTITY_TOKENS:
+            continue
+        if (known is not None and len(words) == 1 and toks[0][1] == 0
+                and not words[0].isupper() and words[0].lower() not in known):
+            continue
+        name = normalize_entity(" ".join(words))
+        if len(name) < 2 or (len(words) == 1 and words[0].lower() in _STOP_CAPS):
             continue
         out.append(name)
     return list(dict.fromkeys(out))[:MAX_ENTITIES]
 
 
-def extract_rules(text: str, inherit_time: bool = False) -> list[Fact]:
+def extract_rules(text: str, inherit_time: bool = False, drop_time: tuple[str, ...] = ()) -> list[Fact]:
     """Hechos de un documento con reglas.
 
     Args:
         text: contenido del documento.
         inherit_time: si una oración no tiene tiempo, hereda el último τ visto en el
             mismo chunk ("In 1834 he moved to X. There he founded Y" → Y hereda 1834).
+        drop_time: papeles de fecha que no se usan como τ (``reteco.temporal.ROLES``:
+            ``"citation"``, ``"metadata"``). Por defecto se usan todas las fechas.
 
     Returns:
         Hechos con relación ``"co-occurs"``. Las oraciones sin tiempo dan hechos con
         ``time=None``, como los tripletes no temporales de la variante genérica del paper.
+        Las oraciones que no son prosa (``is_prose``) no dan hechos.
     """
     facts = []
     for c, chunk in enumerate(chunk_text(text)):
         last_times: list[TimeSpan] = []
-        for sent in [s for s in _SENT_RE.split(chunk) if s and s.strip()][:MAX_SENTENCES]:
-            times = [span for _, _, span in extract_spans(sent)][:MAX_TIMES]
+        sents = [s for s in _SENT_RE.split(chunk) if s and s.strip() and is_prose(s)][:MAX_SENTENCES]
+        known = mid_sentence_caps(sents)
+        for sent in sents:
+            times = [span for _, _, span in extract_spans(sent, drop=drop_time)][:MAX_TIMES]
             if times:
                 last_times = times
             elif inherit_time:
                 times = last_times
-            ents = rule_entities(sent)
+            ents = rule_entities(sent, known)
             if not ents:
                 continue
             pairs = list(zip(ents, ents[1:])) or [(ents[0], ents[0])]

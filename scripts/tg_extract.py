@@ -12,6 +12,12 @@ Extractores:
     ``llm``: prompt ``tg_extract_v1`` con el backend elegido. Los hechos se guardan como
         ``llm-<modelo>``, y las generaciones quedan además en ``outputs/llm_cache/``.
 
+Con los extractores de reglas, ``--drop-time citation metadata`` no usa como τ los años
+de referencias bibliográficas ni las fechas de la página (REVISION_EXTRACCION_TGRAG.md
+§3.3). Cada combinación va a su propia carpeta de hechos, p. ej. ``rules-nocit-nometa``,
+que es el nombre que hay que pasar a ``--extractor`` en ``tg_diagnose.py`` y
+``tg_retrieve.py``.
+
 La extracción es incremental: los documentos ya procesados se saltan. Este script no
 importa torch ni la JVM, así que el LLM (mlx) tiene la memoria para él.
 """
@@ -26,7 +32,10 @@ sys.path.insert(0, str(Path(__file__).resolve().parents[1] / "src"))
 from tqdm.auto import tqdm  # noqa: E402
 
 from reteco.data import DOMAINS, iter_documents, parent_query_id, train_mini_ids  # noqa: E402
+from reteco.temporal import ROLES  # noqa: E402
 from reteco.tgraph import append_facts, done_doc_ids, extract_llm, extract_rules, facts_path, load_pool, pool_path  # noqa: E402
+
+_ROLE_SUFFIX = {"citation": "cit", "metadata": "meta"}
 
 
 def needed_docs(pools: list[str], dom: str, splits: list[str], subset: str | None, top: int | None) -> set[str]:
@@ -56,9 +65,14 @@ def main() -> None:
     parser.add_argument("--model", default=None)
     parser.add_argument("--max-facts", type=int, default=15)
     parser.add_argument("--max-tokens", type=int, default=1200)
+    parser.add_argument("--drop-time", nargs="*", choices=list(ROLES), default=[],
+                        help="papeles de fecha que no se usan como τ (solo extractores de reglas)")
     args = parser.parse_args()
 
-    llm, name = None, args.extractor
+    drop_time = tuple(r for r in ROLES if r in args.drop_time)     # orden fijo → nombre de carpeta estable
+    if drop_time and args.extractor == "llm":
+        parser.error("--drop-time solo se aplica a los extractores de reglas")
+    llm, name = None, args.extractor + "".join(f"-no{_ROLE_SUFFIX[r]}" for r in drop_time)
     if args.extractor == "llm":
         from reteco.llm import LLM
         llm = LLM(args.backend, args.model, max_tokens=args.max_tokens)
@@ -77,7 +91,8 @@ def main() -> None:
                 if doc["id"] not in todo:
                     continue
                 if llm is None:
-                    facts = extract_rules(doc["content"], inherit_time=args.extractor == "rules-inherit")
+                    facts = extract_rules(doc["content"], inherit_time=args.extractor == "rules-inherit",
+                                          drop_time=drop_time)
                 else:
                     facts = extract_llm(doc["content"], llm, doc["id"], args.max_facts)
                 append_facts(name, dom, doc["id"], facts, f)

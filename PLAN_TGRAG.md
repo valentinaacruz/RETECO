@@ -92,6 +92,10 @@ consulta
 - Cada oración con ≥ 1 entidad genera aristas en cadena `(eᵢ, eᵢ₊₁)` (o `(e, e)` si solo hay una).
 - τ: cada expresión temporal de la oración; `None` si no tiene ninguna. Estos hechos sin tiempo se conservan, como en la variante genérica del paper.
 - La descripción de la arista es la propia oración.
+- Tras la revisión manual del 2026-11-11 ([`REVISION_EXTRACCION_TGRAG.md`](REVISION_EXTRACCION_TGRAG.md)):
+  - las oraciones que no son prosa (spam, código, mayúsculas) no dan hechos;
+  - la puntuación corta las entidades y "and" ya no las une;
+  - los años de citas y las fechas de la página se marcan y pueden descartarse con `--drop-time` (variante `rules-nocit-nometa`).
 
 **Con LLM** (fiel al paper; solo en un subconjunto):
 - Prompt propio, porque el paper no publica el de extracción en el PDF.
@@ -173,6 +177,8 @@ Desgloses obligatorios en cada experimento:
 | [`scripts/tg_query_time.py`](scripts/tg_query_time.py) | `T_q` por consulta o paso (reglas / LLM / oráculo) | — |
 | [`scripts/tg_retrieve.py`](scripts/tg_retrieve.py) | grafo + embeddings + scoring + fusión + evaluación y registro en `resultados.csv` | torch (no importa `bm25`) |
 | [`scripts/tg_diagnose.py`](scripts/tg_diagnose.py) | TG0: cobertura temporal de pool, consultas y gold | — |
+| [`scripts/tg_review_extraction.py`](scripts/tg_review_extraction.py) | revisión de la extracción con reglas sobre una muestra (solo lectura; ver [`REVISION_EXTRACCION_TGRAG.md`](REVISION_EXTRACCION_TGRAG.md)) | — |
+| [`tests/test_extraction.py`](tests/test_extraction.py) | pruebas de regresión de `temporal` y `tgraph` con casos reales del corpus | — |
 
 Cambios en módulos existentes (compatibles hacia atrás):
 - `data.train_mini_ids()`: el subconjunto `train-mini` de PLAN_EXPERIMENTOS §1 (40 consultas por dominio, estratificadas por clase).
@@ -208,7 +214,7 @@ Los runs van al árbol de siempre, `outputs/exp/runs/`.
 ```
 
 **Pendiente antes de la primera ejecución** (verificaciones, no experimentos):
-1. Revisar a mano `temporal.extract_spans` con ~30 oraciones reales por dominio, para ver falsos positivos ("1500 USD", números de bloque en `bitcoin`).
+1. ✅ Revisar a mano `temporal.extract_spans` con ~30 oraciones reales por dominio, para ver falsos positivos ("1500 USD", números de bloque en `bitcoin`). Hecho el 2026-11-11 con 400 documentos por dominio; los errores, los cambios y sus efectos están en [`REVISION_EXTRACCION_TGRAG.md`](REVISION_EXTRACCION_TGRAG.md). En TG0, comparar `--extractor rules` con `rules-nocit-nometa`.
 2. Instalar `mlx-lm` (`uv add mlx-lm`) y confirmar el id del modelo (por defecto `mlx-community/Qwen3-4B-Instruct-2507-4bit`), o apuntar el backend `openai` a un servidor local.
 3. Comprobar con `tg_diagnose.py` el tamaño del grafo de `history` (memoria: ~0.5 GB de embeddings fp16 con bge-small y pool de 100).
 
