@@ -2,6 +2,8 @@
 
 Paper: Han et al., *RAG Meets Temporal Graphs: Time-Sensitive Modeling and Retrieval for Evolving Knowledge* ([`papers/2510.13590v1.pdf`](papers/2510.13590v1.pdf), arXiv 2510.13590, oct. 2025). Código oficial: `github.com/hanjiale/Temporal-GraphRAG` (no se usa: se reimplementa lo necesario sobre `src/reteco/`).
 
+> **Estado (2026-11-11): rama cerrada.** TG0 encontró señal temporal en los dominios históricos (RESULTADOS §2.9), pero TG1–TG6 y TG8 no mejoran el híbrido BM25 + `bge-base` en ninguna variante (RESULTADOS §2.10). El `T_q` oráculo tampoco ayuda, así que, por la regla de §4, no se hacen TG3-LLM ni TG7. Ver [`RESULTADOS_EXPERIMENTOS.md`](RESULTADOS_EXPERIMENTOS.md).
+
 Las reglas no cambian (ver [`PLAN_EXPERIMENTOS.md`](PLAN_EXPERIMENTOS.md) §1):
 - todo se ajusta en train y dev solo sirve para confirmar al final;
 - en inferencia no se usan el formato de los IDs, `gold_answers` ni `guidance`;
