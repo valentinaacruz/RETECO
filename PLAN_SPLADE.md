@@ -4,7 +4,7 @@ Objetivo: comprobar si un retriever *sparse* aprendido (SPLADE) mejora la primer
 
 El plan parte de lo medido en [`RESULTADOS_EXPERIMENTOS.md`](RESULTADOS_EXPERIMENTOS.md) y de la revisión del repositorio de IIMAS-RAG para SemEval-2026 Task 8 ([github.com/Vania-Janet/mtrag_semeval2026](https://github.com/Vania-Janet/mtrag_semeval2026)), cuyo paper ya tenemos en [`papers/2026.semeval-1.345.pdf`](papers/2026.semeval-1.345.pdf). Las reglas no cambian: **todo se ajusta en train**, dev solo se usa al final para confirmar a los ganadores, y en inferencia nunca se usan el formato de los IDs, `gold_answers` ni `guidance`.
 
-**Estado (2026-11-18):** el código de §3 está implementado y probado en el Mac (pruebas y humo en `iota`, §9). En el servidor no se ha ejecutado nada y el código aún no está subido.
+**Estado (2026-11-18):** SP0–SP5 terminados; los resultados están en [`RESULTADOS_SPLADE.md`](RESULTADOS_SPLADE.md). **Nueva base de la primera etapa:** RRF de BM25 (w = 0.5), `splade-ed` (w = 1) y `bge-base` (w = 1), con 0.2545 en 1a y 0.2793 en 1b. Queda SP6 (dev), que se hará al final junto con las demás ramas. El registro de implementación y de ejecuciones está en §9.
 
 ---
 
@@ -351,9 +351,9 @@ Calendario orientativo:
 
 ## 8. Preguntas abiertas
 
-1. **Acceso a `splade-v3`.** Está restringido (*gated*, con aprobación automática). Hay que aceptar los términos en su página de Hugging Face con tu cuenta y dejar un token en el servidor (`hf auth login`, o `HF_TOKEN` en el entorno del `tmux`). Como es una credencial, lo tienes que hacer tú. Sin token, SP2 se sustituye por `splade-v3-db` (libre) o se omite.
-2. **Licencia CC BY-NC-SA 4.0** de los modelos de NAVER. Se puede usar en una tarea compartida académica, pero hay que declararla en el *system description*. Si se prefiere evitarla, existe `os-v2` (Apache 2.0).
-3. **Cambios pendientes en el Mac** (los comentarios de 20+ archivos aún sin commit). ¿Se suben en un commit aparte antes del código de SPLADE?
+1. ~~**Acceso a `splade-v3`.**~~ **Resuelta:** sesión de Hugging Face iniciada en el servidor el 2026-11-18; caduca el 2026-12-18.
+2. **Licencia CC BY-NC-SA 4.0** de los modelos de NAVER. Se puede usar en una tarea compartida académica, pero hay que declararla en el *system description*. Si se prefiere evitarla, existe `os-v2` (Apache 2.0). Sigue abierta: hay que declararla si `splade-ed` llega al sistema final.
+3. ~~**Cambios pendientes en el Mac.**~~ **Resuelta:** se subieron en un commit aparte (`f9a2236`).
 
 ---
 
@@ -406,7 +406,26 @@ SPLADE supera a BM25 con la misma consulta en 1a `limpia` y en 1b `limpia+paso`,
 
 `compare_runs.py`, aplicado a BM25 `limpia` frente a `bge-base` `limpia` (1a), reproduce los R@100 de [`RESULTADOS_EXPERIMENTOS.md`](RESULTADOS_EXPERIMENTOS.md) (0.359 y 0.617).
 
-**Pendiente:**
+### 2026-11-18 · Commits, acceso a `splade-v3` y ejecuciones en el servidor
 
-- Commit y push (cuando se indique) y SP0 en el servidor.
-- El script de diagnóstico de SP5 (expansiones, años), que se escribirá cuando haya resultados de SP1.
+**Commits** (con la identidad de la usuaria):
+
+- `f9a2236`: los comentarios y docstrings que estaban pendientes, más los resultados de TG-RAG trasladados a `RESULTADOS_TGRAG.md`.
+- `306636f`: el código de SPLADE.
+
+**Hugging Face:** sesión iniciada en el servidor con OAuth, desde el navegador; caduca el 2026-12-18. Da acceso al modelo restringido `naver/splade-v3`.
+
+**Ejecuciones.** Cada una tiene un lanzador `~/splade_sp*.sh` en el servidor, corre en `tmux` y deja su log en `outputs/exp/logs/`. Horas en CST.
+
+| Paso | Lanzador / log | Horario | Notas |
+|---|---|---|---|
+| SP0 | `splade_sp0.sh` / `splade_sp0.log` | 14:06–14:11 | `iota`, `quant` y `law` en la GPU 0; pruebas con el modelo real incluidas |
+| SP1 | `splade_sp1.sh` / `splade_sp1.log`, `splade_ed_g{0,1}.log` | 14:12–15:12 | codificación en las dos GPUs (38 min) y 12 variantes × 3 agregaciones |
+| SP2 | `splade_sp2.sh` / `splade_sp2.log`, `splade_v3_g{0,1}.log` | 15:21–16:07 | codificación con `splade-v3` (42 min) y 4 comparaciones |
+| SP3 | `splade_sp3.sh` / `splade_sp3.log` | 16:29–16:37 | rejilla ajustada a N ∈ {32, 64, 96, 128} tras ver la distribución de términos |
+| SP4 | `splade_sp4.sh` / `splade_sp4.log` | 16:49–17:00 | primero la rejilla del plan; luego se amplió alrededor del máximo, que quedaba en una esquina, y se probaron `splade-v3` y k ∈ {20, 100} |
+| SP5 | `splade_sp5.sh` / `splade_sp5.log` | 17:17–17:21, y después la repetición | `scripts/splade_diag.py` corrió como copia (`~/splade_diag.py`) antes de su commit; `expansiones` y `anios` se repitieron tras añadir décadas y siglos |
+
+Las comparaciones contra el denso y el híbrido de SP1, y las cifras de R@100 y R@1000 de SP4, se calcularon con `evaluate_variant` y `paired_test` sin escribir en `resultados.csv`.
+
+**Resultados:** en [`RESULTADOS_SPLADE.md`](RESULTADOS_SPLADE.md), con el resumen en [`RESULTADOS_EXPERIMENTOS.md`](RESULTADOS_EXPERIMENTOS.md) §2.10.

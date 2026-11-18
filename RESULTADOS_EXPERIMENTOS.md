@@ -1,6 +1,6 @@
-# Resultados de los experimentos — Fases 0–2 (estado al 2026-11-11)
+# Resultados de los experimentos — Fases 0–2, TG-RAG y SPLADE (estado al 2026-11-18)
 
-Resumen de lo implementado de [`PLAN_EXPERIMENTOS.md`](PLAN_EXPERIMENTOS.md) y [`PLAN_TGRAG.md`](PLAN_TGRAG.md), y de los resultados obtenidos hasta ahora. El detalle de TG-RAG está en [`RESULTADOS_TGRAG.md`](RESULTADOS_TGRAG.md). Todas las cifras son **macro nDCG@10 en train** (13 dominios), salvo que se indique otra cosa. Dev no se ha tocado.
+Resumen de lo implementado de [`PLAN_EXPERIMENTOS.md`](PLAN_EXPERIMENTOS.md), [`PLAN_TGRAG.md`](PLAN_TGRAG.md) y [`PLAN_SPLADE.md`](PLAN_SPLADE.md), y de los resultados obtenidos hasta ahora. El detalle de TG-RAG está en [`RESULTADOS_TGRAG.md`](RESULTADOS_TGRAG.md), y el de SPLADE en [`RESULTADOS_SPLADE.md`](RESULTADOS_SPLADE.md). Todas las cifras son **macro nDCG@10 en train** (13 dominios), salvo que se indique otra cosa. Dev no se ha tocado.
 
 **Estado:**
 
@@ -11,6 +11,7 @@ Resumen de lo implementado de [`PLAN_EXPERIMENTOS.md`](PLAN_EXPERIMENTOS.md) y [
 | 2 · Oráculos | ✅ O1–O3 con BM25 y con el denso; O5. ⏳ Falta repetir O4 con candidatos densos |
 | 3–5 · Clasificador, keywords, LLM | sin empezar |
 | TG-RAG | ✅ revisión del extractor ([`REVISION_EXTRACCION_TGRAG.md`](REVISION_EXTRACCION_TGRAG.md)), TG0 y TG1–TG6 + TG8 (resumen en §2.9; detalle en [`RESULTADOS_TGRAG.md`](RESULTADOS_TGRAG.md)). ❌ **Rama cerrada:** ninguna variante mejora el híbrido |
+| SPLADE | ✅ SP0–SP5 (resumen en §2.10; detalle en [`RESULTADOS_SPLADE.md`](RESULTADOS_SPLADE.md)). **Nueva base de la primera etapa:** híbrido BM25 + SPLADE + denso. ⏳ SP6 (dev), al final junto con las demás ramas |
 
 ---
 
@@ -23,11 +24,12 @@ Resumen de lo implementado de [`PLAN_EXPERIMENTOS.md`](PLAN_EXPERIMENTOS.md) y [
 | [`data.py`](src/reteco/data.py) | rutas, cargadores (consultas, pasos, qrels, guidance), limpieza HTML, normalización de etiquetas (`clase`: 6 clases + `other`; `intent`: 6 intenciones + `other`) |
 | [`bm25.py`](src/reteco/bm25.py) | `OfficialStyleBM25` del notebook, reutilizando los índices de `outputs/eda/bm25/` |
 | [`dense.py`](src/reteco/dense.py) | encoders (`bge-small`, `bge-base`, `e5-base`) en fp16 sobre MPS; chunking de 254 tokens, solape de 30 y máximo 4 trozos por documento; agregación `max` (mejor trozo) o `first` (primer trozo) |
+| [`splade.py`](src/reteco/splade.py) | SPLADE (`splade-ed`, `splade-v3`…) con los mismos trozos que el denso; índice CSR por dominio y búsqueda exacta; agregación `max`, `first` o `maxpool`, poda de la consulta (`-qN`) y consulta sin expansión (`-noexp`) |
 | [`fusion.py`](src/reteco/fusion.py) | `top_k` con el desempate del oficial y RRF (también por consulta con varios textos) |
 | [`queries.py`](src/reteco/queries.py) | registro de variantes de consulta de 1a y 1b, incluidas las de oráculo y `strip_step` (quita el verbo imperativo y las palabras meta de los pasos) |
 | [`evaluate.py`](src/reteco/evaluate.py) | `pytrec_eval`, macro por dominio, test pareado de aleatorización (sobre la macro), desglose por clase e intención, registro en `outputs/exp/resultados.csv` |
 
-`bm25` (JVM) y `dense` (torch) se importan solo en procesos distintos, para evitar la caída del kernel que se vio en el EDA.
+`bm25` (JVM) y `dense` / `splade` (torch) se importan solo en procesos distintos, para evitar la caída del kernel que se vio en el EDA.
 
 ### Scripts (`scripts/`)
 
@@ -36,6 +38,9 @@ Resumen de lo implementado de [`PLAN_EXPERIMENTOS.md`](PLAN_EXPERIMENTOS.md) y [
 | [`run_experiment.py`](scripts/run_experiment.py) | `--subtrack 1a --retriever bm25 --variants all`: corre, evalúa y compara con el baseline oficial; reutiliza los runs ya calculados |
 | [`encode_corpus.py`](scripts/encode_corpus.py) | `--model bge-base`: codifica los corpus por trozos; se puede interrumpir y relanzar |
 | [`fuse_runs.py`](scripts/fuse_runs.py) | RRF de runs ya calculados (p. ej. el híbrido BM25 + denso, R5) |
+| [`encode_splade.py`](scripts/encode_splade.py) | `--model splade-ed`: codifica los corpus con SPLADE; un proceso por GPU; se puede interrumpir y relanzar |
+| [`compare_runs.py`](scripts/compare_runs.py) | complementariedad de dos runs: gold que solo encuentra uno, recall de la unión, Jaccard del top-10 |
+| [`splade_diag.py`](scripts/splade_diag.py) | diagnósticos de SPLADE: expansiones, años, desglose por clase e intención, ejemplos |
 | [`oracle_routing.py`](scripts/oracle_routing.py) | O4: mejor estrategia única frente al enrutamiento por clase o intención (con CV) y frente al oráculo por consulta |
 | [`oracle_class_terms.py`](scripts/oracle_class_terms.py) | O5: log-odds de términos de los gold frente a los hard negatives, por clase |
 
@@ -45,6 +50,7 @@ Resumen de lo implementado de [`PLAN_EXPERIMENTOS.md`](PLAN_EXPERIMENTOS.md) y [
 - `resultados.csv`: una fila por experimento (nDCG@10, R@10/100/1000, Δ, p, dominios que mejoran / empeoran).
 - `oracles/`: tablas de O4 y O5.
 - `dense/bge-base/`: embeddings por dominio.
+- `splade/<modelo>/`: matrices SPLADE por dominio (`splade-ed` 2.3 GB, `splade-v3` 3.5 GB); `splade/diag/`: informes de SP5.
 - `logs/`: registros de ejecución.
 
 ---
@@ -143,7 +149,7 @@ Log-odds (prior de Dirichlet) de términos en gold frente a hard negatives (top-
 
 ### 2.7 Denso `bge-base` en los 13 dominios (train)
 
-Corpus completo codificado (3.47 M trozos, 2.8 GB, ~4.6 h en MPS). Macro nDCG@10; Δ y p frente al baseline oficial (todas p < 0.001 salvo `paso`).
+Corpus completo codificado (1.87 M trozos de 1.17 M documentos, 2.8 GB, ~4.6 h en MPS; corregido el 2026-11-18, antes decía 3.47 M trozos). Macro nDCG@10; Δ y p frente al baseline oficial (todas p < 0.001 salvo `paso`).
 
 **1a** (mejor trozo · primer trozo):
 
@@ -219,6 +225,27 @@ El detalle de TG0 y de TG1–TG6 + TG8 está en [`RESULTADOS_TGRAG.md`](RESULTAD
 - **TG0** (cobertura, sin ranking): los gold caen en `T_q` 1.3 veces (1a) y 1.55 veces (1b) más que los no-gold, pero solo en los dominios históricos y con menos de la mitad de los gold dentro de `T_q`.
 - **TG1–TG6 y TG8** (reranker fusionado con el híbrido de §2.8): con w = 0.5 todas las variantes empeoran (1a −0.015 a −0.021, 1b −0.030 a −0.035); con pesos menores solo empatan. Ni el filtro temporal ni el PPR aportan, y el `T_q` oráculo no cambia nada. **Rama cerrada** sin gastar LLM.
 
+### 2.10 SPLADE (resumen)
+
+El detalle de SP0–SP5 está en [`RESULTADOS_SPLADE.md`](RESULTADOS_SPLADE.md). Modelo `splade-ed` (`naver/splade-cocondenser-ensembledistil`), con los mismos trozos que el denso. En resumen:
+
+- **Solo:** 1a 0.2232 (`limpia`) y 1b 0.2474 (`rrf(titulo+paso,limpia)`).
+  - Supera con holgura al mejor BM25 (+0.070 y +0.081, p < 0.001) y empata con el denso.
+  - Como el denso, quiere la consulta completa y limpia; podarla no ayuda.
+  - `splade-v3` es algo mejor (+0.006 a +0.013), pero no significativo, y no aporta en la fusión.
+- **Complementa al denso mejor que BM25:** en el top-100 aporta ~10 % de gold que el denso no tiene, frente a 4.6–8 % de BM25.
+- **Híbrido de tres brazos** (RRF k = 60; BM25 0.5, SPLADE 1, denso 1):
+
+| | Híbrido anterior (§2.8) | **BM25 + SPLADE + denso** | Δ | p | +/−dom | R@1000 |
+|---|---:|---:|---:|---:|---|---|
+| 1a | 0.2367 | **0.2545** | +0.018 | 0.010 | 10/3 | 0.870 → 0.904 |
+| 1b | 0.2610 | **0.2793** | +0.018 | 0.0008 | 12/1 | 0.938 → 0.951 |
+
+- **Temporal:**
+  - SPLADE amplía los años de la consulta a sus vecinos (±2 años), pero casi nunca a la década o al siglo.
+  - El vocabulario de BERT no tiene como un solo token los años anteriores a ~1540 ni los de 2022 en adelante.
+  - La ganancia viene sobre todo de la ponderación aprendida y de la expansión temática.
+
 ---
 
 ## 3. Conclusiones hasta ahora
@@ -230,9 +257,10 @@ El detalle de TG0 y de TG1–TG6 + TG8 está en [`RESULTADOS_TGRAG.md`](RESULTAD
 3. **Clasificar el tipo de razonamiento no aporta**, de momento: ni con etiquetas perfectas mejora el ranking.
 4. **No hay un vocabulario de documento por clase.** Los gold se distinguen por ser contenido narrativo y no bibliografía, igual en todas las clases.
 5. **El retriever denso es la nueva base** (§2.7). Con `bge-base`, 1a `rrf(limpia,titulo)` da 0.228 y 1b `limpia+paso` da 0.245, unas 2.1–2.4 veces el baseline oficial. HyDE con respuesta perfecta solo añade ~0.007.
-6. **El híbrido con BM25 a medio peso (w = 0.5) es la mejor configuración hasta ahora** (§2.8): 0.237 en 1a y 0.261 en 1b. En 1b la mejora sobre el denso solo es significativa.
+6. **El híbrido con BM25 a medio peso (w = 0.5) fue la mejor configuración hasta SPLADE** (§2.8): 0.237 en 1a y 0.261 en 1b. En 1b la mejora sobre el denso solo es significativa.
 7. **El filtro temporal de TG-RAG tiene recorrido, pero solo como señal y solo en los dominios históricos** ([`RESULTADOS_TGRAG.md`](RESULTADOS_TGRAG.md) §1). Los gold caen en `T_q` 1.3 veces (1a) y 1.55 veces (1b) más que los no-gold, pero menos de la mitad de los gold tienen un hecho en `T_q`. Un filtro duro no sirve.
 8. **TG-RAG como reranker no funciona en TEMPO** ([`RESULTADOS_TGRAG.md`](RESULTADOS_TGRAG.md) §2). Todas las variantes sin LLM (ablaciones, `T_q` oráculo, emparejamientos, más cobertura, pesos de fusión) quedan por debajo del híbrido o empatan con él. Ni el componente temporal ni el PPR aportan. **Rama cerrada** sin gastar LLM. La coincidencia de periodo (TG0) puede servir todavía como **rasgo** de un reranker aprendido, no como método propio.
+9. **La nueva base de la primera etapa es el híbrido BM25 + SPLADE + denso** (§2.10): 0.2545 en 1a y 0.2793 en 1b, +0.018 sobre el híbrido anterior (significativo en los dos subtracks). Es 2.4–2.7 veces el baseline oficial, con R@1000 de 0.904 y 0.951. SPLADE se suma a BM25, no lo sustituye. Falta confirmarlo en dev, al final.
 
 ## 4. Pendiente / siguientes pasos
 
@@ -240,6 +268,8 @@ El detalle de TG0 y de TG1–TG6 + TG8 está en [`RESULTADOS_TGRAG.md`](RESULTAD
 2. ✅ R5: híbrido BM25 + denso (§2.8).
 3. ✅ TG0 y ✅ TG1–TG6 + TG8 ([`RESULTADOS_TGRAG.md`](RESULTADOS_TGRAG.md)): rama TG-RAG cerrada. Si se retoma, solo como rasgo "hecho con τ en `T_q`" para el reranker cross-encoder, no como reranker propio.
 4. Decidir si codificar también con `bge-small` (~2 h) para compararlo en la macro.
-5. Repetir O4 con candidatos léxicos + densos + oráculos de reescritura.
-6. Fase 5 con LLM local (`mlx-lm` + Qwen), solo para lo que el denso muestre que tiene recorrido: condensación (Q1) y HyDE (Q3) primero.
+5. Repetir O4 con candidatos de verdad distintos: BM25, denso, SPLADE y oráculos de reescritura.
+6. Fase 5 con LLM local (`mlx-lm` + Qwen), solo para lo que el denso muestre que tiene recorrido: condensación (Q1) y HyDE (Q3) primero. Cada variante se prueba también sobre el brazo SPLADE y sobre el híbrido de tres brazos.
 7. Probar el rasgo "bibliografía/boilerplate" (O5) como penalización suave antes del reranker.
+8. ✅ SPLADE SP0–SP5 ([`RESULTADOS_SPLADE.md`](RESULTADOS_SPLADE.md)): nueva base de la primera etapa. ⏳ SP6: dev al final, junto con las demás ramas.
+9. K4 (normalizar los años de la consulta a décadas y siglos): SPLADE no lo hace (§2.10), así que sigue abierto. Es especialmente relevante para los años que BERT no tiene como un solo token.
