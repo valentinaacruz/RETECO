@@ -5,23 +5,39 @@ Uso:
     .venv/bin/python scripts/fuse_runs.py --subtrack 1b --runs bge-base/paso bge-base/limpia --weights 1 0.5
 
 El run fusionado se guarda como ``fusion/<nombre>``; por defecto el nombre es
-``rrf(<run1>+<run2>...)``.
+``rrf(<run1>+<run2>...)``, con ``w<pesos>`` al final si se dan pesos (las "/" se
+cambian por ":" para que el nombre sea un directorio válido).
+
+Argumentos:
+    --subtrack  1a o 1b.
+    --runs      runs ``retriever/variante`` a fusionar (ya calculados).
+    --weights   peso de cada run en RRF (por defecto, todos 1).
+    --k         constante de RRF (60).
+    --name      nombre del run fusionado.
+    --split     split.
+    --ref       referencia para Δ y p (por defecto, el baseline oficial).
+
+Solo se fusionan los dominios en los que existen todos los runs.
 """
 
 import argparse
 import sys
 from pathlib import Path
 
+# Permite importar el paquete reteco (en src/) sin instalarlo; por eso los imports que
+# siguen llevan "noqa: E402" (import que no está al principio del archivo).
 sys.path.insert(0, str(Path(__file__).resolve().parents[1] / "src"))
 
 from reteco.data import DOMAINS  # noqa: E402
 from reteco.evaluate import evaluate_variant, has_run, load_run, log_result, save_run  # noqa: E402
 from reteco.fusion import rrf_fuse  # noqa: E402
 
+# Referencia por defecto de cada subtrack: el baseline oficial.
 DEFAULT_REF = {"1a": "bm25/cruda", "1b": "bm25/oficial"}
 
 
 def main() -> None:
+    """Fusiona los runs dominio a dominio, los guarda como ``fusion/<nombre>`` y registra el resultado."""
     parser = argparse.ArgumentParser(description=__doc__, formatter_class=argparse.RawDescriptionHelpFormatter)
     parser.add_argument("--subtrack", choices=["1a", "1b"], required=True)
     parser.add_argument("--runs", nargs="+", required=True, help="runs retriever/variante")
@@ -35,7 +51,7 @@ def main() -> None:
     name = args.name or "rrf(" + "+".join(args.runs).replace("/", ":") + ")"
     if args.weights:
         name += "w" + ",".join(f"{w:g}" for w in args.weights)
-    parts = [r.split("/", 1) for r in args.runs]
+    parts = [r.split("/", 1) for r in args.runs]   # [(retriever, variante), ...]
     domains = [d for d in DOMAINS if all(has_run(r, v, d, args.split) for r, v in parts)]
     for dom in domains:
         runs = [load_run(r, v, dom, args.split) for r, v in parts]

@@ -14,6 +14,10 @@ Además comprueba las pistas de documento escritas a mano en PLAN_EXPERIMENTOS.m
 
 Uso:
     .venv/bin/python scripts/oracle_class_terms.py [--run bm25/limpia] [--neg-depth 50]
+
+Salidas en ``outputs/exp/oracles/``: ``O5_terminos_por_clase.csv`` (términos de gold,
+específicos de la clase y de los negativos) y ``O5_diccionario_manual.csv`` (z de las
+pistas manuales).
 """
 
 import argparse
@@ -22,6 +26,8 @@ import sys
 from collections import Counter, defaultdict
 from pathlib import Path
 
+# Permite importar el paquete reteco (en src/) sin instalarlo; por eso los imports que
+# siguen llevan "noqa: E402" (import que no está al principio del archivo).
 sys.path.insert(0, str(Path(__file__).resolve().parents[1] / "src"))
 
 import numpy as np  # noqa: E402
@@ -31,7 +37,9 @@ from sklearn.feature_extraction.text import ENGLISH_STOP_WORDS  # noqa: E402
 from reteco.data import DOMAINS, EXP_DIR, iter_documents, load_qrels, query_labels  # noqa: E402
 from reteco.evaluate import load_run  # noqa: E402
 
+# Palabra: letras (con apóstrofo o guion), de al menos 3 caracteres.
 WORD_RE = re.compile(r"[a-z][a-z'-]{2,}")
+# ID corto de documento ("<dominio>/<8 hex>_<n>.txt"), el formato de los gold (EDA 2.4).
 SHORT_ID_RE = re.compile(r"^[^/]+/[0-9a-f]{8}_\d+\.txt$")
 
 # Pistas de documento de PLAN_EXPERIMENTOS.md §6.1 (hipótesis a contrastar).
@@ -61,11 +69,23 @@ def log_odds_z(c1: Counter, n1: int, c2: Counter, n2: int, prior: Counter, n_pri
 
     ``a0`` es la masa total del prior: reparte ``a0`` pseudo-documentos según la
     frecuencia de cada término en el fondo, lo que encoge los términos raros.
+
+    Args:
+        c1, n1: frecuencia de documento de cada término en el grupo 1 y número de documentos.
+        c2, n2: lo mismo para el grupo 2.
+        prior, n_prior: frecuencias y número de documentos del fondo (gold + negativos).
+        a0: masa total del prior.
+        keep: si se da, solo se puntúan estos términos.
+
+    Returns:
+        z de cada término (solo términos con ≥ 5 documentos entre los dos grupos),
+        ordenado de mayor a menor. z > 2: más típico del grupo 1; z < −2: del grupo 2.
     """
     terms = [t for t in prior if c1[t] + c2[t] >= 5 and (keep is None or t in keep)]
-    a = np.array([a0 * prior[t] / n_prior for t in terms])
+    a = np.array([a0 * prior[t] / n_prior for t in terms])          # pseudo-conteos del prior
     y1 = np.array([c1[t] for t in terms], dtype=float)
     y2 = np.array([c2[t] for t in terms], dtype=float)
+    # log-odds suavizado de cada grupo, su diferencia y la varianza aproximada (Monroe et al., 2008).
     l1 = np.log((y1 + a) / (n1 + a0 - y1 - a))
     l2 = np.log((y2 + a) / (n2 + a0 - y2 - a))
     var = 1 / (y1 + a) + 1 / (y2 + a)
@@ -73,6 +93,7 @@ def log_odds_z(c1: Counter, n1: int, c2: Counter, n2: int, prior: Counter, n_pri
 
 
 def main() -> None:
+    """Reúne gold y hard negatives por clase, cuenta términos y calcula los log-odds."""
     parser = argparse.ArgumentParser(description=__doc__, formatter_class=argparse.RawDescriptionHelpFormatter)
     parser.add_argument("--run", default="bm25/limpia", help="retriever/variante de donde salen los hard negatives")
     parser.add_argument("--neg-depth", type=int, default=50)
@@ -107,11 +128,13 @@ def main() -> None:
         print(f"{dom}: {len(needed[dom]):,} documentos leídos", flush=True)
 
     def counts(docs: set) -> Counter:
+        """Frecuencia de documento de cada término en un conjunto de documentos."""
         c = Counter()
         for key in docs:
             c.update(terms[key])
         return c
 
+    # 3) Log-odds global (todas las clases) y por clase.
     prior = counts(set(terms))
     # Solo términos presentes en gold de ≥ 5 consultas distintas: si no, el top es vocabulario
     # del tema de una única consulta (nombres propios), no un patrón de la clase.
@@ -136,6 +159,7 @@ def main() -> None:
             hw_rows.append({"clase": clase, "termino": t, "z": round(float(z.get(t, np.nan)), 2),
                             "z_global": round(float(z_all.get(t, np.nan)), 2)})
 
+    # 4) Guarda las tablas e imprime el resumen.
     out_dir = EXP_DIR / "oracles"
     out_dir.mkdir(parents=True, exist_ok=True)
     pd.DataFrame(out_rows).to_csv(out_dir / "O5_terminos_por_clase.csv", index=False)

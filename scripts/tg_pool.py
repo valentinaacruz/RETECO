@@ -15,6 +15,8 @@ import json
 import sys
 from pathlib import Path
 
+# Permite importar el paquete reteco (en src/) sin instalarlo; por eso los imports que
+# siguen llevan "noqa: E402" (import que no está al principio del archivo).
 sys.path.insert(0, str(Path(__file__).resolve().parents[1] / "src"))
 
 from reteco.data import DOMAINS  # noqa: E402
@@ -23,10 +25,12 @@ from reteco.tgraph import pool_path  # noqa: E402
 
 
 def ranked(ranking: dict[str, float]) -> list[str]:
+    """Ids de documento de un ranking ``{doc_id: score}``, de mayor a menor score."""
     return [d for d, _ in sorted(ranking.items(), key=lambda x: -x[1])]
 
 
 def main() -> None:
+    """Construye y guarda el pool de cada dominio y split."""
     parser = argparse.ArgumentParser(description=__doc__, formatter_class=argparse.RawDescriptionHelpFormatter)
     parser.add_argument("--subtrack", choices=["1a", "1b"], required=True)
     parser.add_argument("--runs", nargs="+", required=True, help="runs retriever/variante")
@@ -44,8 +48,11 @@ def main() -> None:
                 continue
             runs = [load_run(r, v, dom, split) for r, v in parts]
             pool = {}
-            for qid in runs[0]:
+            for qid in runs[0]:   # las consultas del primer run
                 lists = [ranked(run.get(qid, {}))[:args.depth] for run in runs]
+                # Intercalado por rango: posición 1 de cada run, luego posición 2... Un dict
+                # (ordenado e indexado) sirve de "conjunto con orden": cada documento entra una vez,
+                # en la primera posición en que aparece.
                 seen = {}
                 for rank in range(args.depth):
                     for lst in lists:

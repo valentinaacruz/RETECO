@@ -28,6 +28,8 @@ import sys
 from collections import Counter, defaultdict
 from pathlib import Path
 
+# Permite importar el paquete reteco (en src/) sin instalarlo; por eso los imports que
+# siguen llevan "noqa: E402" (import que no está al principio del archivo).
 sys.path.insert(0, str(Path(__file__).resolve().parents[1] / "src"))
 
 from reteco import temporal  # noqa: E402
@@ -42,11 +44,24 @@ except ImportError:                     # versión anterior a la revisión: no f
 
 
 def sample_docs(domain: str, n: int, pool: int, seed: int) -> list[dict]:
+    """Muestra reproducible de documentos de un dominio.
+
+    Args:
+        domain: dominio.
+        n: tamaño de la muestra.
+        pool: se muestrea entre los ``pool`` primeros documentos del corpus (leer el
+            corpus entero de ``history`` sería lento).
+        seed: semilla; cada semilla da documentos distintos (diseño / evaluación).
+
+    Returns:
+        Lista de documentos ``{"id", "content"}``.
+    """
     docs = list(itertools.islice(iter_documents(domain), pool))
     return random.Random(f"{seed}:{domain}").sample(docs, min(n, len(docs)))
 
 
 def main() -> None:
+    """Imprime la tabla por dominio y, si se pide, ejemplos para revisar a mano."""
     parser = argparse.ArgumentParser(description=__doc__, formatter_class=argparse.RawDescriptionHelpFormatter)
     parser.add_argument("--domains", nargs="*", default=None)
     parser.add_argument("--docs", type=int, default=400)
@@ -56,6 +71,7 @@ def main() -> None:
     parser.add_argument("--show-unflagged", type=int, default=0, help="años sueltos sin marcar a imprimir")
     args = parser.parse_args()
 
+    # Compatibilidad con el código anterior a la revisión (para la columna "antes").
     with_roles = hasattr(temporal, "extract_spans_with_role")
     examples: dict[str, list[str]] = defaultdict(list)
     cols = ["dominio", "hechos/doc", "% con τ", "entidades", "% en ≥2 docs", "% con AND", "% >5 pal.", "% cita", "% meta"]
@@ -78,6 +94,7 @@ def main() -> None:
                     mentions[e] += 1
             if not with_roles:
                 continue
+            # Papel de cada expresión temporal, oración a oración, como hace extract_rules.
             for chunk in chunk_text(d["content"]):
                 for sent in _SENT_RE.split(chunk):
                     if not sent or not sent.strip() or not is_prose(sent):
@@ -89,6 +106,7 @@ def main() -> None:
                             examples[role].append(ctx)
                         elif span.gran == "year":
                             examples["unflagged-year"].append(ctx)
+        # Proporciones sobre menciones de entidad (no sobre entidades distintas).
         n_ment = sum(mentions.values()) or 1
         shared = sum(c for e, c in mentions.items() if len(ent_docs[e]) >= 2) / n_ment
         with_and = sum(c for e, c in mentions.items() if " AND " in f" {e} ") / n_ment
@@ -105,6 +123,7 @@ def main() -> None:
           + (f"{totals['cit'] / max(totals['spans'], 1):.1%} | {totals['meta'] / max(totals['spans'], 1):.1%}"
              if with_roles else "— | —"))
 
+    # Ejemplos al azar para la revisión manual de precisión (citas, metadatos) y recall (años sin marcar).
     rng = random.Random(args.seed)
     for role, n in (("citation", args.show), ("metadata", args.show), ("unflagged-year", args.show_unflagged)):
         if n and examples[role]:

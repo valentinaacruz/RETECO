@@ -12,6 +12,11 @@
 
 Los hechos se guardan por documento en ``outputs/exp/tgrag/facts/<extractor>/<dominio>.jsonl``.
 Como la extracción es incremental, si el pool crece solo se procesan los documentos nuevos.
+
+Además de los hechos, aquí están la E/S de los pools de candidatos
+(``outputs/exp/tgrag/pools/``) y del alcance temporal de las consultas
+(``outputs/exp/tgrag/qtime/``), que escriben ``scripts/tg_pool.py`` y
+``scripts/tg_query_time.py``.
 """
 
 import json
@@ -26,18 +31,29 @@ import scipy.sparse as sp
 from reteco.data import EXP_DIR
 from reteco.temporal import URL_RE, TimeSpan, ancestors, extract_spans, parse_normalized, span_nodes
 
-TG_DIR = EXP_DIR / "tgrag"
+TG_DIR = EXP_DIR / "tgrag"   # raíz de todas las salidas de TG-RAG
 CHUNK_WORDS = 800       # ~1,150 tokens: el chunk de 1,200 tokens del paper
 MAX_CHUNKS = 4          # como en reteco.dense: se cubre el inicio de los documentos largos
 MAX_SENTENCES = 80      # por chunk (extractor de reglas)
 MAX_ENTITIES = 6        # por oración
 MAX_ENTITY_TOKENS = 5   # sin contar conectores; más largas suelen ser títulos o referencias fusionadas
 MAX_TIMES = 3           # por oración
-DESC_CHARS = 400
+DESC_CHARS = 400        # longitud máxima de la descripción de una arista (lo que se codifica)
 
 
 @dataclass
 class Fact:
+    """Un hecho temporal: la arista ``(e1, e2, relación, τ)`` del grafo.
+
+    Attributes:
+        chunk: índice del chunk del documento del que sale (0–3).
+        e1, e2: entidades normalizadas (``normalize_entity``).
+        relation: frase verbal (LLM) o ``"co-occurs"`` (reglas).
+        time: τ del hecho, o ``None`` si no tiene tiempo.
+        description: texto que describe el hecho (la oración, con reglas). Es lo que se
+            codifica para calcular ``γ_ε = cos(e_q, e_ε)``.
+    """
+
     chunk: int
     e1: str
     e2: str
@@ -46,16 +62,25 @@ class Fact:
     description: str
 
     def to_row(self) -> list:
+        """Lista JSON compacta ``[chunk, e1, e2, relación, τ serializado o None, descripción]``."""
         return [self.chunk, self.e1, self.e2, self.relation, self.time.to_str() if self.time else None, self.description]
 
     @staticmethod
     def from_row(row: list) -> "Fact":
+        """Inversa de ``to_row``."""
         chunk, e1, e2, rel, t, desc = row
         return Fact(chunk, e1, e2, rel, TimeSpan.from_str(t) if t else None, desc)
 
 
 def chunk_text(text: str) -> list[str]:
-    """Trozos de ``CHUNK_WORDS`` palabras (como mucho ``MAX_CHUNKS``)."""
+    """Parte un documento en trozos de ``CHUNK_WORDS`` palabras (como mucho ``MAX_CHUNKS``).
+
+    Args:
+        text: contenido del documento.
+
+    Returns:
+        Lista de trozos; ``[""]`` si el documento está vacío, para que tenga al menos uno.
+    """
     words = text.split()
     if not words:
         return [""]
@@ -64,6 +89,8 @@ def chunk_text(text: str) -> list[str]:
 
 # ----------------------------------------------------------------------------- extractor de reglas
 
+# Divisor de oraciones: después de ".", "!" o "?" seguido de espacio y de una mayúscula o
+# dígito (con comilla o paréntesis opcional delante), o en cualquier salto de línea.
 _SENT_RE = re.compile(r"(?<=[.!?])\s+(?=[\"“'(\[]?[A-Z0-9])|\s*\n+\s*")
 # Acrónimos con puntos ("U.S.", "J.D.") como un solo token; si no, palabras.
 _TOKEN_RE = re.compile(r"(?:[A-Z]\.){2,}|[A-Za-zÀ-ÖØ-öø-ÿ][\w'’&-]*")
@@ -86,6 +113,8 @@ _DISCOURSE = {
     "understanding", "consider", "imagine", "suppose", "note", "example", "e.g", "i.e", "yes", "ok", "okay",
     "hi", "hello", "dear", "welcome", "great", "good", "nice", "sure", "well", "oh", "wow",
 }
+# Palabras que aparecen en mayúscula sin ser nombres (inicio de oración, días, meses...):
+# se quitan del principio de una entidad y nunca son una entidad de una sola palabra.
 _STOP_CAPS = _DISCOURSE | _TITLES | {
     "i", "a", "an", "the", "this", "that", "these", "those", "it", "its", "he", "she", "they", "we", "you", "his", "her",
     "their", "our", "my", "your", "in", "on", "at", "for", "but", "and", "or", "if", "when", "where", "while", "as", "by",
@@ -100,8 +129,18 @@ _STOP_CAPS = _DISCOURSE | _TITLES | {
 
 
 def normalize_entity(name: str) -> str:
-    """Nombre canónico de una entidad: mayúsculas, sin posesivo, sin puntos de acrónimo ni puntuación de borde."""
-    name = re.sub(r"['’]s\b", "", name.strip())
+    """Nombre canónico de una entidad: mayúsculas, sin posesivo, sin puntos de acrónimo ni puntuación de borde.
+
+    Así "the U.S.'s", "U.S." y "US" son la misma entidad, y el grafo conecta documentos
+    que la mencionan de formas distintas.
+
+    Args:
+        name: texto de la entidad.
+
+    Returns:
+        Nombre canónico en mayúsculas (puede quedar vacío).
+    """
+    name = re.sub(r"['’]s\b", "", name.strip())   # posesivo: "Napoleon's" → "Napoleon"
     name = re.sub(r"\b([A-Z])\.(?=[A-Z]\.|\s|$)", r"\1", name)       # "U.S." → "US", "J.D. Dean" → "JD Dean"
     name = re.sub(r"\s+", " ", name).strip(" .,;:-'\"“”()[]")
     return name.upper()
@@ -110,9 +149,11 @@ def normalize_entity(name: str) -> str:
 # ----------------------------------------------------------------------------- filtros de oración
 # Ver REVISION_EXTRACCION_TGRAG.md §3.4.
 
+# Etiquetas BBCode de spam de foros.
 _BBCODE_RE = re.compile(r"\[/?(?:url|b|i|img|link|quote|code)\b", re.IGNORECASE)
 # Sin ";" final: las enumeraciones legales terminan así ("…shall report;").
 _CODE_RE = re.compile(r"//|/\*|\*/|#include|\bdef\s+\w+\(|\breturn\b.*;|[{}]\s*$|=>|->|==|!=|\+=|&&|\|\|")
+# Símbolos típicos de código: si son más del 10 % de los caracteres, no es prosa.
 _CODE_CHARS = set("{}[]<>=;|\\/*+#$@~^`")
 
 
@@ -123,6 +164,12 @@ def is_prose(sentence: str) -> bool:
     - Código: marcas típicas (``//``, ``==``, ``=>``, ``;`` final…) o >10 % de símbolos.
     - Mayúsculas: con ≥ 20 letras, más del 60 % en mayúscula (titulares, cabeceras de tabla,
       volcados de ensamblador). Ahí la heurística de "palabra capitalizada = nombre" no vale.
+
+    Args:
+        sentence: oración.
+
+    Returns:
+        ``True`` si la oración puede dar hechos.
     """
     if _BBCODE_RE.search(sentence):
         return False
@@ -142,10 +189,16 @@ def mid_sentence_caps(sentences: list[str]) -> set[str]:
     Sirve para decidir si la primera palabra de una oración es un nombre: "Monero is…"
     se acepta si "Monero" aparece capitalizada en otra posición del mismo chunk; "Another
     crisis…" no.
+
+    Args:
+        sentences: oraciones de un chunk.
+
+    Returns:
+        Conjunto de palabras en minúsculas.
     """
     seen = set()
     for sent in sentences:
-        for m in list(_TOKEN_RE.finditer(sent))[1:]:
+        for m in list(_TOKEN_RE.finditer(sent))[1:]:   # [1:]: se salta la primera palabra de la oración
             tok = m.group()
             if tok[0].isupper():
                 seen.add(tok.lower())
@@ -154,8 +207,16 @@ def mid_sentence_caps(sentences: list[str]) -> set[str]:
 
 def _gap_breaks(gap: str, prev_tok: str) -> bool:
     """¿Corta la entidad el texto entre dos tokens? Cualquier puntuación corta, salvo el
-    punto de una inicial ("John F. Kennedy")."""
-    if gap.strip() == "":
+    punto de una inicial ("John F. Kennedy").
+
+    Args:
+        gap: texto entre el final del token anterior y el inicio del siguiente.
+        prev_tok: token anterior.
+
+    Returns:
+        ``True`` si la entidad en curso termina aquí.
+    """
+    if gap.strip() == "":   # solo espacios: la entidad continúa
         return False
     return not (gap.strip() == "." and len(prev_tok) == 1 and prev_tok.isupper())
 
@@ -175,17 +236,26 @@ def rule_entities(sentence: str, known: set[str] | None = None) -> list[str]:
         - "and" / "&" no unen nombres;
         - se quitan del inicio palabras de discurso, tratamientos y palabras vacías;
         - se descartan entidades de más de ``MAX_ENTITY_TOKENS`` palabras (sin conectores).
+
+    Returns:
+        Entidades normalizadas, sin repetir, en orden de aparición (como mucho ``MAX_ENTITIES``).
     """
+    # Las URLs se sustituyen por espacios de la misma longitud para no mover las posiciones.
     sentence = URL_RE.sub(lambda m: " " * len(m.group()), sentence)
     tokens = [(m.group(), m.start(), m.end()) for m in _TOKEN_RE.finditer(sentence)]
+    # 1. Agrupa tokens consecutivos capitalizados en candidatas. Cada candidata es una
+    #    lista de (token, posición en la oración).
     ents, cur = [], []
     for i, (tok, s, _) in enumerate(tokens):
+        # La puntuación entre el token anterior y este cierra la candidata en curso.
         if cur and _gap_breaks(sentence[tokens[i - 1][2]:s], tokens[i - 1][0]):
             ents.append(cur)
             cur = []
         if tok[0].isupper():
             cur.append((tok, i))
             continue
+        # Un conector en minúscula ("of", "de") solo se queda si va entre dos palabras
+        # capitalizadas sin puntuación por medio: "Bank of England".
         nxt = tokens[i + 1] if i + 1 < len(tokens) else None
         if (cur and tok.lower() in _CONNECTORS and nxt is not None and nxt[0][:1].isupper()
                 and not _gap_breaks(sentence[tokens[i][2]:nxt[1]], tok)):
@@ -196,10 +266,13 @@ def rule_entities(sentence: str, known: set[str] | None = None) -> list[str]:
         cur = []
     if cur:
         ents.append(cur)
+    # 2. Limpia y filtra cada candidata.
     out = []
     for toks in ents:
+        # Quita del inicio las palabras que no son nombres ("Finally", "The", "Mr")...
         while toks and toks[0][0].lower() in _STOP_CAPS:
             toks = toks[1:]
+        # ...y del final los conectores sueltos ("Bank of").
         while toks and toks[-1][0].lower() in _CONNECTORS:
             toks = toks[:-1]
         if not toks:
@@ -207,6 +280,7 @@ def rule_entities(sentence: str, known: set[str] | None = None) -> list[str]:
         words = [t for t, _ in toks]
         if sum(w.lower() not in _CONNECTORS for w in words) > MAX_ENTITY_TOKENS:
             continue
+        # Una sola palabra en la posición 0: solo vale si es acrónimo o sale en mitad de otra oración.
         if (known is not None and len(words) == 1 and toks[0][1] == 0
                 and not words[0].isupper() and words[0].lower() not in known):
             continue
@@ -234,7 +308,7 @@ def extract_rules(text: str, inherit_time: bool = False, drop_time: tuple[str, .
     """
     facts = []
     for c, chunk in enumerate(chunk_text(text)):
-        last_times: list[TimeSpan] = []
+        last_times: list[TimeSpan] = []   # último τ visto en el chunk (para inherit_time)
         sents = [s for s in _SENT_RE.split(chunk) if s and s.strip() and is_prose(s)][:MAX_SENTENCES]
         known = mid_sentence_caps(sents)
         for sent in sents:
@@ -246,8 +320,10 @@ def extract_rules(text: str, inherit_time: bool = False, drop_time: tuple[str, .
             ents = rule_entities(sent, known)
             if not ents:
                 continue
+            # Una arista por par de entidades consecutivas; con una sola entidad, un lazo (e, e).
             pairs = list(zip(ents, ents[1:])) or [(ents[0], ents[0])]
             desc = sent.strip()[:DESC_CHARS]
+            # Con varias fechas en la oración, una arista paralela por fecha (como en el paper).
             for t in times or [None]:
                 facts.extend(Fact(c, a, b, "co-occurs", t, desc) for a, b in pairs)
     return facts
@@ -255,6 +331,10 @@ def extract_rules(text: str, inherit_time: bool = False, drop_time: tuple[str, .
 
 # ----------------------------------------------------------------------------- extractor LLM
 
+# Prompt del extractor LLM (TG7). Está en inglés porque el corpus lo está. El id es el
+# nombre del archivo de caché del LLM: si se cambia el prompt, hay que cambiar el id.
+# Los marcadores {max_facts} y {text} se sustituyen con replace (no con format), porque
+# el ejemplo JSON del prompt lleva llaves.
 EXTRACT_PROMPT_ID = "tg_extract_v1"
 EXTRACT_PROMPT = """-Goal-
 Given a text passage, extract temporal facts: relations between two entities, each anchored to the time when the relation holds or the event happened.
@@ -283,14 +363,33 @@ Output:"""
 
 
 def extract_prompt(chunk: str, max_facts: int = 15) -> str:
+    """Prompt de extracción para un chunk.
+
+    Args:
+        chunk: texto del chunk.
+        max_facts: máximo de hechos que se piden.
+
+    Returns:
+        ``EXTRACT_PROMPT`` con los marcadores sustituidos.
+    """
     return EXTRACT_PROMPT.replace("{max_facts}", str(max_facts)).replace("{text}", chunk)
 
 
 def parse_llm_facts(output: str, chunk: int) -> list[Fact]:
-    """Hechos de la respuesta del LLM; ignora los elementos mal formados."""
+    """Hechos de la respuesta del LLM; ignora los elementos mal formados.
+
+    Args:
+        output: respuesta del LLM (se espera una lista JSON).
+        chunk: índice del chunk al que corresponde.
+
+    Returns:
+        Hechos válidos (con sujeto y objeto no vacíos). Un ``time`` que no se puede leer
+        queda como ``None``.
+    """
+    # Import local: con el extractor de reglas, tgraph no necesita el módulo del LLM.
     from reteco.llm import parse_json_block
     data = parse_json_block(output)
-    if isinstance(data, dict):
+    if isinstance(data, dict):   # a veces el modelo devuelve un único objeto en vez de una lista
         data = [data]
     facts = []
     for item in data or []:
@@ -306,7 +405,17 @@ def parse_llm_facts(output: str, chunk: int) -> list[Fact]:
 
 
 def extract_llm(text: str, llm, doc_id: str, max_facts: int = 15) -> list[Fact]:
-    """Hechos de un documento con el LLM: una llamada por chunk."""
+    """Hechos de un documento con el LLM: una llamada por chunk.
+
+    Args:
+        text: contenido del documento.
+        llm: instancia de ``reteco.llm.LLM`` (con caché).
+        doc_id: id del documento (para la trazabilidad de la caché).
+        max_facts: máximo de hechos por chunk.
+
+    Returns:
+        Hechos de todos los chunks.
+    """
     facts = []
     for c, chunk in enumerate(chunk_text(text)):
         if chunk.strip():
@@ -319,10 +428,19 @@ def extract_llm(text: str, llm, doc_id: str, max_facts: int = 15) -> list[Fact]:
 
 
 def facts_path(extractor: str, domain: str) -> Path:
+    """Archivo de hechos: ``outputs/exp/tgrag/facts/<extractor>/<dominio>.jsonl``.
+
+    ``extractor`` incluye la variante (``rules``, ``rules-nocit-nometa``, ``llm``...).
+    """
     return TG_DIR / "facts" / extractor / f"{domain}.jsonl"
 
 
 def done_doc_ids(extractor: str, domain: str) -> set[str]:
+    """Ids de los documentos ya procesados (para la extracción incremental).
+
+    Returns:
+        Conjunto vacío si todavía no hay archivo de hechos.
+    """
     path = facts_path(extractor, domain)
     if not path.exists():
         return set()
@@ -331,7 +449,18 @@ def done_doc_ids(extractor: str, domain: str) -> set[str]:
 
 
 def append_facts(extractor: str, domain: str, doc_id: str, facts: list[Fact], f=None) -> None:
-    """Añade los hechos de un documento (también si no tiene ninguno, para no repetirlo)."""
+    """Añade los hechos de un documento (también si no tiene ninguno, para no repetirlo).
+
+    Cada línea del archivo es ``{"doc_id": ..., "facts": [Fact.to_row(), ...]}``.
+
+    Args:
+        extractor: nombre del extractor (carpeta).
+        domain: dominio.
+        doc_id: id del documento.
+        facts: hechos extraídos.
+        f: archivo ya abierto en modo ``"a"``; si se da, se escribe ahí (más rápido en
+            bucles). Si no, se abre y cierra el archivo del extractor.
+    """
     line = json.dumps({"doc_id": doc_id, "facts": [x.to_row() for x in facts]}, ensure_ascii=False) + "\n"
     if f is not None:
         f.write(line)
@@ -343,7 +472,16 @@ def append_facts(extractor: str, domain: str, doc_id: str, facts: list[Fact], f=
 
 
 def load_facts(extractor: str, domain: str, doc_ids: set[str] | None = None) -> dict[str, list[Fact]]:
-    """Hechos por documento (solo los de ``doc_ids`` si se indica)."""
+    """Hechos por documento (solo los de ``doc_ids`` si se indica).
+
+    Args:
+        extractor: nombre del extractor.
+        domain: dominio.
+        doc_ids: si se da, solo se cargan estos documentos (ahorra memoria en ``history``).
+
+    Returns:
+        ``{doc_id: [Fact, ...]}``.
+    """
     out = {}
     with open(facts_path(extractor, domain), encoding="utf-8") as f:
         for line in f:
@@ -356,6 +494,7 @@ def load_facts(extractor: str, domain: str, doc_ids: set[str] | None = None) -> 
 
 
 def pool_path(subtrack: str, pool: str, domain: str, split: str) -> Path:
+    """Archivo del pool: ``outputs/exp/tgrag/pools/<subtrack>/<pool>/<dominio>__<split>.json``."""
     return TG_DIR / "pools" / subtrack / pool / f"{domain}__{split}.json"
 
 
@@ -366,11 +505,20 @@ def load_pool(subtrack: str, pool: str, domain: str, split: str) -> dict[str, li
 
 
 def qtime_path(method: str, subtrack: str, domain: str, split: str) -> Path:
+    """Archivo de ``T_q``: ``outputs/exp/tgrag/qtime/<método>/<subtrack>/<dominio>__<split>.json``."""
     return TG_DIR / "qtime" / method / subtrack / f"{domain}__{split}.json"
 
 
 def load_qtime(method: str, subtrack: str, domain: str, split: str):
-    """Alcance temporal ``T_q`` por consulta: ``{qid: [Scope, ...]}``."""
+    """Alcance temporal ``T_q`` por consulta.
+
+    Args:
+        method: ``"rules"``, ``"oracle"`` o ``"llm"``.
+        subtrack, domain, split: ver ``qtime_path``.
+
+    Returns:
+        ``{qid: [Scope, ...]}``; la lista vacía significa "consulta sin alcance".
+    """
     from reteco.temporal import Scope
     with open(qtime_path(method, subtrack, domain, split), encoding="utf-8") as f:
         return {qid: [Scope.from_str(s) for s in scopes] for qid, scopes in json.load(f).items()}
@@ -388,9 +536,16 @@ class TemporalGraph:
         ``descriptions`` (descripciones únicas, para calcular cada embedding una vez).
         ``doc_ptr``: las aristas del documento ``i`` son ``doc_ptr[i]:doc_ptr[i+1]``.
         ``time_index``: nodo de tiempo → aristas (incluidos los ancestros), perezoso.
+        ``entities``: nombre de cada entidad (nodo del nivel inferior).
+        ``doc_ids`` / ``doc_index``: id de cada documento y su inverso.
     """
 
     def __init__(self, facts_by_doc: dict[str, list[Fact]]):
+        """Construye el grafo a partir de los hechos de cada documento.
+
+        Args:
+            facts_by_doc: ``{doc_id: [Fact, ...]}`` (normalmente, los documentos del pool).
+        """
         self.doc_ids = list(facts_by_doc)
         self.doc_index = {d: i for i, d in enumerate(self.doc_ids)}
         self.entities: list[str] = []
@@ -398,6 +553,9 @@ class TemporalGraph:
         self.descriptions: list[str] = []
         desc_index: dict[str, int] = {}
         e1, e2, doc, chunk, desc, self.times, ptr = [], [], [], [], [], [], [0]
+        # Las aristas se añaden documento a documento, así que las de cada documento quedan
+        # contiguas y doc_ptr basta para encontrarlas. setdefault da índices nuevos a las
+        # entidades y descripciones que aparecen por primera vez.
         for i, d in enumerate(self.doc_ids):
             for fact in facts_by_doc[d]:
                 e1.append(ent_index.setdefault(fact.e1, len(ent_index)))
@@ -413,8 +571,8 @@ class TemporalGraph:
         self.doc, self.chunk = np.array(doc, np.int32), np.array(chunk, np.int16)
         self.desc = np.array(desc, np.int32)
         self.doc_ptr = np.array(ptr, np.int64)
-        self._adj = None
-        self._time_index = None
+        self._adj = None          # adyacencia, se calcula al pedirla
+        self._time_index = None   # índice de tiempo, se calcula al pedirlo
 
     @property
     def time_index(self) -> dict[str, list[int]]:
@@ -432,10 +590,18 @@ class TemporalGraph:
 
     @property
     def n_edges(self) -> int:
+        """Número de aristas (hechos) del grafo."""
         return len(self.e1)
 
     def edges_of(self, doc_idx: list[int] | np.ndarray) -> np.ndarray:
-        """Índices de las aristas extraídas de los documentos indicados."""
+        """Índices de las aristas extraídas de los documentos indicados.
+
+        Args:
+            doc_idx: índices de documento (posiciones en ``doc_ids``).
+
+        Returns:
+            Array con los índices de arista, documento a documento.
+        """
         parts = [np.arange(self.doc_ptr[i], self.doc_ptr[i + 1]) for i in doc_idx]
         return np.concatenate(parts) if parts else np.array([], np.int64)
 
@@ -448,6 +614,7 @@ class TemporalGraph:
         return self._adj
 
     def stats(self) -> dict:
+        """Tamaño del grafo, para los logs: documentos, entidades, aristas, aristas con τ y descripciones."""
         timed = sum(t is not None for t in self.times)
         return {"docs": len(self.doc_ids), "entidades": len(self.entities), "aristas": self.n_edges,
                 "aristas_con_tiempo": timed, "descripciones": len(self.descriptions)}

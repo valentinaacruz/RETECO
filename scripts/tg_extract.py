@@ -27,6 +27,8 @@ import sys
 import time
 from pathlib import Path
 
+# Permite importar el paquete reteco (en src/) sin instalarlo; por eso los imports que
+# siguen llevan "noqa: E402" (import que no está al principio del archivo).
 sys.path.insert(0, str(Path(__file__).resolve().parents[1] / "src"))
 
 from tqdm.auto import tqdm  # noqa: E402
@@ -35,11 +37,24 @@ from reteco.data import DOMAINS, iter_documents, parent_query_id, train_mini_ids
 from reteco.temporal import ROLES  # noqa: E402
 from reteco.tgraph import append_facts, done_doc_ids, extract_llm, extract_rules, facts_path, load_pool, pool_path  # noqa: E402
 
+# Sufijo del nombre de carpeta por cada papel descartado: rules + citation → "rules-nocit".
 _ROLE_SUFFIX = {"citation": "cit", "metadata": "meta"}
 
 
 def needed_docs(pools: list[str], dom: str, splits: list[str], subset: str | None, top: int | None) -> set[str]:
-    """Documentos de los pools pedidos (opcionalmente solo ``train-mini`` y el top-N de cada consulta)."""
+    """Documentos de los pools pedidos (opcionalmente solo ``train-mini`` y el top-N de cada consulta).
+
+    Args:
+        pools: especificaciones ``"<subtrack>/<pool>"``.
+        dom: dominio.
+        splits: splits cuyos pools se usan.
+        subset: ``"mini"`` para quedarse con las consultas de ``train-mini``; ``None`` = todas.
+        top: si se da, solo los ``top`` primeros candidatos de cada consulta.
+
+    Returns:
+        Conjunto de ids de documento (la unión de todos los pools). Los pools que no
+        existen se ignoran.
+    """
     docs = set()
     for spec in pools:
         subtrack, name = spec.split("/", 1)
@@ -54,6 +69,7 @@ def needed_docs(pools: list[str], dom: str, splits: list[str], subset: str | Non
 
 
 def main() -> None:
+    """Extrae los hechos de los documentos que faltan, dominio a dominio."""
     parser = argparse.ArgumentParser(description=__doc__, formatter_class=argparse.RawDescriptionHelpFormatter)
     parser.add_argument("--extractor", choices=["rules", "rules-inherit", "llm"], required=True)
     parser.add_argument("--pools", nargs="+", required=True, help="<subtrack>/<pool>, p. ej. 1a/p100")
@@ -72,6 +88,7 @@ def main() -> None:
     drop_time = tuple(r for r in ROLES if r in args.drop_time)     # orden fijo → nombre de carpeta estable
     if drop_time and args.extractor == "llm":
         parser.error("--drop-time solo se aplica a los extractores de reglas")
+    # Nombre de la carpeta de hechos: el extractor más un sufijo por papel descartado.
     llm, name = None, args.extractor + "".join(f"-no{_ROLE_SUFFIX[r]}" for r in drop_time)
     if args.extractor == "llm":
         from reteco.llm import LLM
@@ -79,6 +96,7 @@ def main() -> None:
         name = f"llm-{llm.model_name.split('/')[-1]}"
 
     for dom in args.domains or DOMAINS:
+        # Extracción incremental: solo los documentos que aún no están en el archivo de hechos.
         todo = needed_docs(args.pools, dom, args.splits, args.subset, args.top) - done_doc_ids(name, dom)
         if not todo:
             print(f"{dom}: nada que extraer")
@@ -87,6 +105,7 @@ def main() -> None:
         path = facts_path(name, dom)
         path.parent.mkdir(parents=True, exist_ok=True)
         with open(path, "a", encoding="utf-8") as f, tqdm(total=len(todo), desc=f"{name}:{dom}", leave=False) as bar:
+            # Se recorre el corpus una vez (no se puede leer un documento suelto por id).
             for doc in iter_documents(dom):
                 if doc["id"] not in todo:
                     continue
@@ -99,7 +118,7 @@ def main() -> None:
                 n_facts += len(facts)
                 bar.update()
                 if llm is not None:
-                    f.flush()
+                    f.flush()   # con el LLM cada documento es caro: que quede en disco enseguida
         print(f"{dom}: {len(todo):,} documentos, {n_facts:,} hechos en {time.time() - t0:.0f} s", flush=True)
 
 

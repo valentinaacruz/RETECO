@@ -9,6 +9,18 @@ Retrievers: ``bm25`` (baseline oficial) o un encoder de ``reteco.dense.MODELS``,
 opcionalmente con ``@first`` (score del primer trozo) en lugar del mejor trozo.
 Los runs ya calculados se reutilizan; ``--force`` los recalcula.
 Cada variante se compara con ``--ref`` (por defecto, el baseline oficial).
+
+Argumentos:
+    --subtrack   1a o 1b.
+    --retriever  bm25, bge-small, bge-base, e5-base (con @first opcional).
+    --variants   nombres de ``reteco.queries.VARIANTS`` o ``all``.
+    --split      split de evaluación (train por defecto; dev solo para la comprobación final).
+    --domains    subconjunto de dominios (por defecto, los 13).
+    --ref        run de referencia ``retriever/variante`` para Δ y p.
+    --force      recalcula los runs aunque existan.
+
+Salidas: runs en ``outputs/exp/runs/<retriever>/<variante>/`` y una fila por variante
+en ``outputs/exp/resultados.csv``; imprime una tabla resumen.
 """
 
 import argparse
@@ -16,6 +28,8 @@ import sys
 import time
 from pathlib import Path
 
+# Permite importar el paquete reteco (en src/) sin instalarlo; por eso los imports que
+# siguen llevan "noqa: E402" (import que no está al principio del archivo).
 sys.path.insert(0, str(Path(__file__).resolve().parents[1] / "src"))
 
 from reteco.data import DOMAINS  # noqa: E402
@@ -23,23 +37,43 @@ from reteco.evaluate import evaluate_variant, has_run, log_result, save_run  # n
 from reteco.fusion import rrf_multi  # noqa: E402
 from reteco.queries import VARIANTS  # noqa: E402
 
+# Referencia por defecto de cada subtrack: el baseline oficial.
 DEFAULT_REF = {"1a": "bm25/cruda", "1b": "bm25/oficial"}
 
 
 def open_index(retriever: str, domain: str):
-    """Carga el índice del retriever; la importación es perezosa para no mezclar JVM y torch."""
+    """Carga el índice del retriever; la importación es perezosa para no mezclar JVM y torch.
+
+    Args:
+        retriever: ``"bm25"`` o ``"<encoder>[@first]"``.
+        domain: dominio.
+
+    Returns:
+        Un ``OfficialStyleBM25`` o un ``DenseIndex``. Al denso se le añade el atributo
+        ``agg`` (``"max"`` o ``"first"``) para que ``search`` lo use.
+    """
     if retriever == "bm25":
         from reteco.bm25 import OfficialStyleBM25
         return OfficialStyleBM25(domain)
     from reteco.dense import DenseIndex
-    key, _, agg = retriever.partition("@")
+    key, _, agg = retriever.partition("@")   # "bge-base@first" → ("bge-base", "first")
     index = DenseIndex(key, domain)
     index.agg = agg or "max"
     return index
 
 
 def search(index, queries: dict[str, str | list[str]], k: int = 1000) -> dict:
-    """Busca cada texto y fusiona con RRF las consultas que tienen varios."""
+    """Busca cada texto y fusiona con RRF las consultas que tienen varios.
+
+    Args:
+        index: índice de ``open_index``.
+        queries: ``{qid: texto | [textos]}`` (salida de ``Variant.build``).
+        k: documentos por consulta.
+
+    Returns:
+        Run ``{qid: {doc_id: score}}``.
+    """
+    # Aplana a un texto por clave "qid\tposición" para buscar todo de una vez...
     flat = {}
     for qid, q in queries.items():
         for i, text in enumerate(q if isinstance(q, list) else [q]):
@@ -49,6 +83,7 @@ def search(index, queries: dict[str, str | list[str]], k: int = 1000) -> dict:
         res = index.search_many(texts, k, agg=index.agg)
     else:
         res = index.search_many(texts, k)
+    # ...y reagrupa los rankings por consulta: uno se usa tal cual, varios se fusionan con RRF.
     grouped: dict[str, list] = {}
     for key, ranking in res.items():
         grouped.setdefault(key.split("\t")[0], []).append(ranking)
@@ -56,6 +91,7 @@ def search(index, queries: dict[str, str | list[str]], k: int = 1000) -> dict:
 
 
 def main() -> None:
+    """Calcula los runs que faltan, los evalúa frente a la referencia y registra los resultados."""
     parser = argparse.ArgumentParser(description=__doc__, formatter_class=argparse.RawDescriptionHelpFormatter)
     parser.add_argument("--subtrack", choices=["1a", "1b"], required=True)
     parser.add_argument("--retriever", default="bm25")
@@ -75,6 +111,7 @@ def main() -> None:
 
     # 1) Runs que faltan, dominio a dominio (el índice se carga una vez por dominio).
     for dom in domains:
+        # Solo las variantes sin run guardado (o todas con --force).
         missing = [v for v in variants if args.force or not has_run(args.retriever, v, dom, args.split)]
         if not missing:
             continue
@@ -84,7 +121,7 @@ def main() -> None:
             run = search(index, registry[v].build(dom, args.split))
             save_run(run, args.retriever, v, dom, args.split)
         print(f"{dom}: {len(missing)} variante(s) en {time.time() - t0:.0f} s", flush=True)
-        del index
+        del index   # libera la memoria del índice antes de cargar el del siguiente dominio
 
     # 2) Evaluación y registro.
     ref_name = args.ref or DEFAULT_REF[args.subtrack]

@@ -12,6 +12,7 @@ deben seguir reconociéndose. No necesita pytest:
 import sys
 from pathlib import Path
 
+# Permite importar el paquete reteco (en src/) sin instalarlo.
 sys.path.insert(0, str(Path(__file__).resolve().parents[1] / "src"))
 
 from reteco.temporal import extract_spans, extract_spans_with_role, query_scopes  # noqa: E402
@@ -19,17 +20,25 @@ from reteco.tgraph import extract_rules, is_prose, mid_sentence_caps, rule_entit
 
 
 def spans(text: str, drop=()) -> list[tuple[str, str, float]]:
-    """``[(texto, granularidad, inicio)]`` de las expresiones encontradas."""
+    """``[(texto, granularidad, inicio)]`` de las expresiones encontradas.
+
+    Args:
+        text: texto de prueba.
+        drop: papeles que se descartan (se pasa a ``extract_spans``).
+    """
     return [(text[s:e], sp.gran, sp.start) for s, e, sp in extract_spans(text, drop=drop)]
 
 
 def roles(text: str) -> dict[str, str | None]:
+    """``{texto de la expresión: papel}`` (``"citation"``, ``"metadata"`` o ``None``)."""
     return {text[s:e]: role for s, e, _, role in extract_spans_with_role(text)}
 
 
 # ----------------------------------------------------------------------------- fechas correctas (no deben romperse)
 
 def test_real_dates_still_found():
+    """Las fechas reales de todos los formatos se siguen reconociendo tras endurecer las reglas."""
+    # texto → (expresión esperada, granularidad esperada)
     cases = {
         "In the first week of October 1942, Hitler came to recognise": ("October 1942", "month"),
         "attorney general 1866 to 10 March 1880, and bailiff": ("10 March 1880", "day"),
@@ -48,6 +57,7 @@ def test_real_dates_still_found():
 
 
 def test_query_scopes_logic_unchanged():
+    """La lógica before / after de ``T_q`` no cambia ("prior to", "since", "post-")."""
     [sc] = query_scopes("What happened prior to 1600 in Venice?")
     assert sc.logic == "before" and sc.span.start == 1600
     [sc] = query_scopes("Trade policy since the 1830s")
@@ -59,12 +69,14 @@ def test_query_scopes_logic_unchanged():
 # ----------------------------------------------------------------------------- números que no son fechas (§3.2)
 
 def test_no_dates_inside_urls():
+    """Los números dentro de URLs y BBCode no son fechas; fuera de la URL, sí."""
     assert spans("[url=http://syw79.com/home.php?mod=space&uid=1738]sewgmf Whether") == []
     assert spans("idnesautoelectrical.co.uk/renault-trafic-dci-2004/#comment-63901]cnmkdj only") == []
     assert spans("see www.example.org/archive/1999/report for the 1834 reform") == [("1834", "year", 1834)]
 
 
 def test_numbers_with_page_section_money_context():
+    """Números precedidos de página, sección, formulario o símbolo de moneda, o seguidos de unidad, no son años."""
     assert spans("1464(t) (applicable to Federal savings associations)") == []
     assert spans("help alleviate the burden on ( printed page 1654) individuals") == []
     assert spans("It costs $1200-1500 to advertise for bids.") == []           # ni rango ni "1500" suelto
@@ -77,6 +89,8 @@ def test_numbers_with_page_section_money_context():
 # ----------------------------------------------------------------------------- papel: cita bibliográfica (§3.3)
 
 def test_citation_years():
+    """Años de referencias bibliográficas y judiciales: papel ``citation``."""
+    # (texto, año que debe salir como cita)
     cites = [
         ("on in English Politics 1820 to 1830 (Oxford, 1964), 113–15.", "1964"),
         ("(for a different context, see (Wang et al., 2016 How time preferences differ", "2016"),
@@ -116,6 +130,8 @@ def test_citation_years():
 
 
 def test_event_years_are_not_citations():
+    """Años de hechos que se parecen a citas (paréntesis, comas, titulaciones) no se marcan."""
+    # (texto, año que debe ser fecha del contenido)
     events = [
         ("In 1991, the Merkle tree was used to form a secure b", "1991"),
         ("upgrades like Homestead (2016), the DAO fork (2016), Byzantium (2017)", "2017"),
@@ -139,6 +155,8 @@ def test_event_years_are_not_citations():
 # ----------------------------------------------------------------------------- papel: metadatos de la página (§3.3)
 
 def test_metadata_dates():
+    """Fechas de la página (acceso, comentarios, copyright): papel ``metadata``."""
+    # (texto, expresión que debe salir como metadato)
     meta = [
         ("lTransitionsReport-FINAL-EN.pdf (accessed 2 May 2013).", "2 May 2013"),
         ("a worn out chair 5390. **Williammig** August 4, 2025 at 7:09 pm", "August 4, 2025"),
@@ -152,6 +170,7 @@ def test_metadata_dates():
 
 
 def test_drop_roles():
+    """``drop`` quita exactamente los papeles pedidos y rechaza papeles desconocidos."""
     text = "Caesar crossed the Rubicon in 49 BC (Oxford, 1964). Page accessed 2 May 2013."
     assert [t for t, _, _ in spans(text)] == ["49 BC", "1964", "2 May 2013"]
     assert [t for t, _, _ in spans(text, drop=("citation",))] == ["49 BC", "2 May 2013"]
@@ -167,6 +186,7 @@ def test_drop_roles():
 # ----------------------------------------------------------------------------- entidades (§3.4)
 
 def test_discourse_words_are_not_entities():
+    """Palabras de discurso al inicio de oración ("Finally", "Another") no son entidades."""
     ents = rule_entities("Finally, we discuss design flaws with the Public Key Infrastructure system used in EV charging.")
     assert "FINALLY" not in ents and "PUBLIC KEY INFRASTRUCTURE" in ents and "EV" in ents
     ents = rule_entities("Another crisis in Rome’s early formation as a nation occurred.")
@@ -177,6 +197,7 @@ def test_discourse_words_are_not_entities():
 
 
 def test_and_does_not_join_names():
+    """"and" separa nombres distintos en vez de unirlos."""
     ents = rule_entities("Bill Ackman and Tyler and Cameron Winklevoss backed it.")
     assert "TYLER AND CAMERON WINKLEVOSS" not in ents
     assert {"BILL ACKMAN", "TYLER", "CAMERON WINKLEVOSS"} <= set(ents), ents
@@ -184,6 +205,7 @@ def test_and_does_not_join_names():
 
 
 def test_punctuation_breaks_entities():
+    """Comas, punto y coma y paréntesis cortan la entidad."""
     ents = rule_entities("He returned to the private practice of law in San Francisco, California, from 1956 to 1968.")
     assert ents == ["SAN FRANCISCO", "CALIFORNIA"], ents
     ents = rule_entities("McKee, American Electric Railway Association; Eva B.")
@@ -193,6 +215,7 @@ def test_punctuation_breaks_entities():
 
 
 def test_initials_and_acronyms():
+    """Iniciales ("John F. Kennedy") y acrónimos con puntos ("U.S.") se tratan como parte del nombre."""
     assert rule_entities("John F. Kennedy was elected.") == ["JOHN F KENNEDY"]
     assert rule_entities("The U.S. Army landed.") == ["US ARMY"]                 # un solo nombre
     assert rule_entities("Troops from the U.S. landed.", set()) == ["US"]
@@ -200,11 +223,13 @@ def test_initials_and_acronyms():
 
 
 def test_long_capitalized_runs_dropped():
+    """Secuencias capitalizadas de más de MAX_ENTITY_TOKENS palabras (titulares) se descartan."""
     ents = rule_entities("The Very Long Named Thing Of Many Capital Words Here appeared.")
     assert ents == [], ents
 
 
 def test_sentence_initial_word_needs_support():
+    """Una palabra suelta al inicio de oración solo es entidad si sale capitalizada en mitad de otra."""
     sents = ["Monero is a private coin.", "Users of Monero value privacy."]
     known = mid_sentence_caps(sents)
     assert rule_entities(sents[0], known) == ["MONERO"]
@@ -216,6 +241,7 @@ def test_sentence_initial_word_needs_support():
 # ----------------------------------------------------------------------------- filtro de prosa (§3.4)
 
 def test_is_prose():
+    """El filtro de prosa quita spam con BBCode, código y titulares en mayúsculas, y deja pasar la prosa."""
     assert not is_prose("Finally [url=https://www.scarpacanada.com/][b]scarpa footwear[/b][/url] and seem random.")
     assert not is_prose("See stack.h. +\t\t// +\t\t// Preemption sets stackguard to StackPreempt")
     assert not is_prose("JULY 11–12 – THE 2018 BRUSSELS NATO SUMMIT IS HELD IN BELGIUM.")
@@ -225,6 +251,7 @@ def test_is_prose():
 
 
 def test_extract_rules_end_to_end():
+    """Extracción completa: el spam no da hechos y ``drop_time`` quita las citas como τ."""
     text = ("Caesar crossed the Rubicon in 49 BC (Oxford, 1964). "
             "Finally [url=https://spam.example.com/]cheap shoes[/url] since 2007.")
     facts = extract_rules(text)
@@ -236,6 +263,7 @@ def test_extract_rules_end_to_end():
 
 
 if __name__ == "__main__":
+    # Ejecutor mínimo sin pytest: corre todas las funciones test_* en orden alfabético.
     tests = [(n, f) for n, f in sorted(globals().items()) if n.startswith("test_") and callable(f)]
     failed = 0
     for name, fn in tests:

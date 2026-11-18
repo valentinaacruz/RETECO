@@ -27,6 +27,8 @@ import time
 from dataclasses import replace
 from pathlib import Path
 
+# Permite importar el paquete reteco (en src/) sin instalarlo; por eso los imports que
+# siguen llevan "noqa: E402" (import que no está al principio del archivo).
 sys.path.insert(0, str(Path(__file__).resolve().parents[1] / "src"))
 
 from reteco.data import DOMAINS, parent_query_id, train_mini_ids  # noqa: E402
@@ -36,10 +38,13 @@ from reteco.queries import VARIANTS  # noqa: E402
 from reteco.tgrag import PRESETS, TGConfig, description_embeddings, query_embeddings, score_query  # noqa: E402
 from reteco.tgraph import TG_DIR, TemporalGraph, load_facts, load_pool, load_qtime  # noqa: E402
 
+# Texto de la consulta para e_q si no se pasa --query-variant. En los runs de TG1 se pasó
+# --query-variant limpia+paso en 1b (el denso prefiere la consulta completa).
 DEFAULT_QUERY_VARIANT = {"1a": "limpia", "1b": "titulo+paso_limpio"}
 
 
 def main() -> None:
+    """Construye el grafo de cada dominio, puntúa cada configuración, fusiona, evalúa y registra."""
     parser = argparse.ArgumentParser(description=__doc__, formatter_class=argparse.RawDescriptionHelpFormatter)
     parser.add_argument("--subtrack", choices=["1a", "1b"], required=True)
     parser.add_argument("--pool", required=True)
@@ -65,11 +70,14 @@ def main() -> None:
 
     base_r, base_v = args.base.split("/", 1)
     qvar = args.query_variant or DEFAULT_QUERY_VARIANT[args.subtrack]
+    # Nombres de los runs: retriever = extractor + encoder; el sufijo añade T_q, pool y opciones.
     retriever = f"tgrag-{args.extractor}-{args.encoder}"
     suffix = f",qt-{args.qtime},{args.pool}" + (f",top{args.top}" if args.top else "") + \
              (f",q-{qvar}" if args.query_variant else "") + ("@mini" if args.subset else "")
+    # El run es oráculo si T_q o el texto de la consulta lo son.
     oracle = args.qtime == "oracle" or VARIANTS[args.subtrack][qvar].oracle
 
+    # Todas las combinaciones preset × K × match × graph_scope pedidas.
     configs = []
     for preset, k, match, gscope in itertools.product(args.presets, args.K, args.match, args.graph_scope):
         # Sin componente temporal, match no influye: se evita repetir la misma config.
@@ -79,6 +87,7 @@ def main() -> None:
                       chunk_weight=args.chunk_weight, doc_agg=args.doc_agg, fallback=not args.no_fallback)
         configs.append((cfg.name(preset) + suffix, cfg))
 
+    # Solo los dominios donde existe el run base (hace falta para fusionar y comparar).
     domains = [d for d in (args.domains or DOMAINS) if has_run(base_r, base_v, d, args.split)]
     mini_all: set[str] = set()
     diag_rows = []
@@ -96,6 +105,7 @@ def main() -> None:
         missing = len(docs) - len(facts)
         if missing:
             print(f"  aviso: {dom}: {missing:,} documentos del pool sin extraer (cuentan como vacíos)")
+        # Grafo con los documentos del pool del dominio; embeddings de sus aristas y de las consultas.
         graph = TemporalGraph({d: facts.get(d, []) for d in sorted(docs)})
         desc_emb = description_embeddings(graph, args.extractor, args.encoder, dom)
         queries = {q: t for q, t in VARIANTS[args.subtrack][qvar].build(dom, args.split).items() if q in pool}
@@ -103,6 +113,7 @@ def main() -> None:
         scopes = load_qtime(args.qtime, args.subtrack, dom, args.split)
         base = {q: r for q, r in load_run(base_r, base_v, dom, args.split).items() if q in pool}
 
+        # Para cada configuración: run TG puro y sus fusiones RRF con la base.
         for name, cfg in configs:
             tg_run = {}
             for qid, cands in pool.items():
@@ -114,7 +125,7 @@ def main() -> None:
             for w in args.rrf_weights:
                 save_run(rrf_fuse([base, tg_run], weights=[1.0, w]), retriever, f"{name}+rrf{w:g}", dom, args.split)
         print(f"{dom}: {graph.stats()} · {len(configs)} config(s) en {time.time() - t0:.0f} s", flush=True)
-        del graph, desc_emb
+        del graph, desc_emb   # libera memoria antes del siguiente dominio (history es grande)
 
     # Diagnóstico por consulta (semillas, fallback, documentos con score TG).
     diag_path = TG_DIR / "diag" / f"{retriever}__{args.subtrack}__{args.split}{suffix}.csv"

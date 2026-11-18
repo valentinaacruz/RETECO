@@ -5,12 +5,17 @@ Uso:
     .venv/bin/python scripts/encode_corpus.py --model e5-base --domains iota law quant
 
 Los dominios ya codificados se saltan, así que se puede interrumpir y relanzar.
+
+Salida: ``outputs/exp/dense/<modelo>/<dominio>.npz`` (ver ``reteco.dense.encode_corpus``).
+Con bge-base, los 13 dominios son ~3.5 M trozos y ~4.6 h en el MPS del M2 Pro.
 """
 
 import argparse
 import sys
 from pathlib import Path
 
+# Permite importar el paquete reteco (en src/) sin instalarlo; por eso los imports que
+# siguen llevan "noqa: E402" (import que no está al principio del archivo).
 sys.path.insert(0, str(Path(__file__).resolve().parents[1] / "src"))
 
 from reteco.data import DOMAINS, T1_DIR  # noqa: E402
@@ -18,6 +23,7 @@ from reteco.dense import MODELS, encode_corpus  # noqa: E402
 
 
 def main() -> None:
+    """Codifica los dominios pedidos, uno detrás de otro."""
     parser = argparse.ArgumentParser(description=__doc__, formatter_class=argparse.RawDescriptionHelpFormatter)
     parser.add_argument("--model", choices=sorted(MODELS), default="bge-base")
     parser.add_argument("--domains", nargs="*", default=None, help="por defecto, los 13 (de menor a mayor)")

@@ -34,6 +34,24 @@ from reteco.tgraph import TG_DIR, TemporalGraph
 
 @dataclass(frozen=True)
 class TGConfig:
+    """Configuración de una variante de TG-RAG.
+
+    Attributes:
+        K: número de aristas de ``E_q`` (las top-K por ``γ``); el paper usa 20.
+        temporal: si se usa el filtro temporal ``m(τ, T_q)``.
+        ppr: si se propaga por el grafo con PageRank personalizado.
+        static: grafo estático (sin τ; aristas paralelas fusionadas).
+        match: emparejamiento τ ↔ ``T_q``: ``contained``, ``overlap`` o ``soft``.
+        edge_scope: de dónde salen las aristas candidatas: ``query`` (pool de la consulta) o
+            ``pool`` (todas las del grafo del dominio).
+        graph_scope: grafo del PPR: ``subgraph`` (``G_q``, el paper) o ``pool`` (todo el grafo).
+        chunk_weight: ``prod`` aplica el factor ``Π (1 + γ_ε)`` de la ec. (3); ``none`` no.
+        doc_agg: score del documento a partir de sus chunks: ``max`` o ``sum``.
+        damping: factor de amortiguación de PageRank.
+        fallback: si la consulta no tiene alcance o ninguna arista cae en él, puntuar sin
+            filtro temporal (``True``) o no puntuar (``False``).
+    """
+
     K: int = 20
     temporal: bool = True
     ppr: bool = True
@@ -53,6 +71,7 @@ class TGConfig:
         return preset + (f"[{','.join(diff)}]" if diff else "")
 
 
+# Ablaciones de la tabla VII del paper: cada preset fija algunos campos de TGConfig.
 PRESETS: dict[str, dict] = {
     "full": {"temporal": True, "ppr": True},
     "no_ppr": {"temporal": True, "ppr": False},                    # s(ε) = 1[τ∈T_q]·γ_ε
@@ -66,6 +85,7 @@ PRESETS: dict[str, dict] = {
 
 
 def _hash(text: str) -> str:
+    """Hash corto (16 hex) de un texto: clave de la caché de embeddings."""
     return hashlib.md5(text.encode("utf-8")).hexdigest()[:16]
 
 
@@ -75,6 +95,16 @@ def description_embeddings(graph: TemporalGraph, extractor: str, encoder: str, d
 
     La caché ``outputs/exp/tgrag/edge_emb/<extractor>/<encoder>/<dominio>.npz`` guarda
     ``keys`` (hash de cada texto) y ``emb``. Solo se codifican las descripciones nuevas.
+
+    Args:
+        graph: grafo con las descripciones a codificar.
+        extractor: nombre del extractor (carpeta de la caché).
+        encoder: clave del encoder en ``reteco.dense.MODELS``.
+        domain: dominio.
+        batch_size: tamaño de batch.
+
+    Returns:
+        Matriz (n_descripciones × dim) alineada con ``graph.descriptions``.
     """
     from reteco.dense import MODELS, get_model
 
@@ -83,12 +113,12 @@ def description_embeddings(graph: TemporalGraph, extractor: str, encoder: str, d
     if path.exists():
         z = np.load(path)
         keys_old, emb_old = z["keys"], z["emb"]
-    row = {k: i for i, k in enumerate(keys_old.tolist())}
+    row = {k: i for i, k in enumerate(keys_old.tolist())}   # hash → fila en emb_old
     keys = [_hash(t) for t in graph.descriptions]
     missing = [i for i, k in enumerate(keys) if k not in row]
     if missing:
         model = get_model(encoder)
-        model.max_seq_length = 128
+        model.max_seq_length = 128   # las descripciones son una oración (≤ 400 caracteres)
         new = model.encode([MODELS[encoder]["doc_prefix"] + graph.descriptions[i] for i in missing],
                            batch_size=batch_size, normalize_embeddings=True, convert_to_numpy=True,
                            show_progress_bar=len(missing) > 50_000).astype(np.float16)
@@ -97,16 +127,26 @@ def description_embeddings(graph: TemporalGraph, extractor: str, encoder: str, d
         emb_old = new if emb_old is None else np.vstack([emb_old, new])
         path.parent.mkdir(parents=True, exist_ok=True)
         np.savez(path, keys=keys_old, emb=emb_old)
+        # Las filas nuevas van al final de la matriz.
         row.update({k: len(row) + j for j, k in enumerate(new_keys.tolist())})
     return emb_old[np.array([row[k] for k in keys], dtype=np.int64)]
 
 
 def query_embeddings(encoder: str, queries: dict[str, str | list[str]]) -> dict[str, np.ndarray]:
-    """Embedding por consulta; si tiene varios textos, la media normalizada."""
+    """Embedding por consulta; si tiene varios textos, la media normalizada.
+
+    Args:
+        encoder: clave del encoder en ``reteco.dense.MODELS``.
+        queries: ``{qid: texto | [textos]}`` (salida de una variante de ``reteco.queries``).
+
+    Returns:
+        ``{qid: vector float32 normalizado}``.
+    """
     from reteco.dense import MODELS, QUERY_MAX_TOKENS, get_model
 
     model = get_model(encoder)
     model.max_seq_length = QUERY_MAX_TOKENS
+    # Se codifican todos los textos de una vez y luego se agrupan por consulta.
     flat = [(qid, t) for qid, q in queries.items() for t in (q if isinstance(q, list) else [q])]
     emb = model.encode([MODELS[encoder]["query_prefix"] + t for _, t in flat], batch_size=32,
                        normalize_embeddings=True, convert_to_numpy=True, show_progress_bar=False)
@@ -128,6 +168,18 @@ def pagerank(adj: sp.csr_matrix, personalization: np.ndarray | None, damping: fl
     """PageRank (personalizado si se da ``personalization``) por iteración de potencias.
 
     La masa de los nodos sin aristas vuelve a la distribución de personalización.
+
+    Iteración: ``r ← d · (Pᵀ r + masa_colgante · p) + (1 − d) · p``.
+
+    Args:
+        adj: adyacencia (simétrica, con pesos).
+        personalization: vector de reinicio sin normalizar; ``None`` o todo ceros = uniforme.
+        damping: factor ``d``.
+        iters: iteraciones máximas.
+        tol: se para cuando la norma L1 del cambio baja de ``tol``.
+
+    Returns:
+        Score PageRank de cada nodo (suma 1).
     """
     n = adj.shape[0]
     if n == 0:
@@ -135,9 +187,9 @@ def pagerank(adj: sp.csr_matrix, personalization: np.ndarray | None, damping: fl
     p = np.full(n, 1.0 / n) if personalization is None or personalization.sum() <= 0 \
         else personalization / personalization.sum()
     deg = np.asarray(adj.sum(axis=1)).ravel()
-    inv = np.divide(1.0, deg, out=np.zeros_like(deg, dtype=np.float64), where=deg > 0)
+    inv = np.divide(1.0, deg, out=np.zeros_like(deg, dtype=np.float64), where=deg > 0)   # 1/grado, 0 si aislado
     trans = sp.diags(inv) @ adj                      # fila i: probabilidad de saltar de i a j
-    dangling = deg == 0
+    dangling = deg == 0                              # nodos sin aristas de salida
     r = p.copy()
     for _ in range(iters):
         r_new = damping * (trans.T @ r + r[dangling].sum() * p) + (1 - damping) * p
@@ -167,14 +219,19 @@ def score_query(graph: TemporalGraph, desc_emb: np.ndarray, q: np.ndarray, scope
         con score positivo; el resto lo ordena la primera etapa al fusionar.
     """
     info = {"aristas_cand": 0, "con_alcance": bool(scopes), "semillas": 0, "fallback": False, "docs_tg": 0}
+    # Paso 1: aristas candidatas.
     edges = np.sort(graph.edges_of(cand_docs)) if cfg.edge_scope == "query" else np.arange(graph.n_edges)
     if len(edges) == 0:
         return {}, info
+    # Paso 2: γ_ε = cos(e_q, e_ε). Se calcula una vez por descripción distinta y se
+    # reparte a sus aristas; los cosenos negativos se ponen a 0.
     uniq, inv = np.unique(graph.desc[edges], return_inverse=True)
     gamma = np.clip(desc_emb[uniq].astype(np.float32) @ q, 0.0, None)[inv]
 
     if cfg.static:
         # Grafo estático: sin τ, una sola arista por (documento, chunk, e1, e2) → la de mayor γ.
+        # Se ordena por γ descendente y np.unique con return_index se queda con la primera
+        # aparición de cada clave, es decir, la de mayor γ.
         order = np.argsort(-gamma, kind="stable")
         key = np.stack([graph.doc[edges], graph.chunk[edges], graph.e1[edges], graph.e2[edges]], axis=1)[order]
         _, first = np.unique(key, axis=0, return_index=True)
@@ -182,18 +239,22 @@ def score_query(graph: TemporalGraph, desc_emb: np.ndarray, q: np.ndarray, scope
         edges, gamma = edges[keep], gamma[keep]
     info["aristas_cand"] = int(len(edges))
 
+    # E_q: las top-K aristas por γ (sin ordenar entre ellas, no hace falta).
     k = min(cfg.K, len(edges))
     top = np.argpartition(-gamma, k - 1)[:k]
     eq, gq = edges[top], gamma[top]
 
     def match(idx: np.ndarray) -> np.ndarray:
+        """m(τ, T_q) de cada arista de ``idx``."""
         return np.array([temporal_match(graph.times[i], scopes, cfg.match) for i in idx], dtype=np.float64)
 
+    # Paso 3: filtro temporal sobre E_q. Si ninguna arista cae en T_q, fallback: sin filtro.
     use_time = cfg.temporal and not cfg.static and bool(scopes)
     m_q = match(eq) if use_time else np.ones(len(eq))
     if use_time and m_q.sum() == 0 and cfg.fallback:
         use_time, m_q = False, np.ones(len(eq))
         info["fallback"] = True
+    # Consulta sin alcance: se puntúa sin filtro (fallback) o no se puntúa.
     if cfg.temporal and not scopes:
         info["fallback"] = cfg.fallback
         if not cfg.fallback:
@@ -204,11 +265,14 @@ def score_query(graph: TemporalGraph, desc_emb: np.ndarray, q: np.ndarray, scope
         scored, g_s, m_s = eq, gq, m_q
     else:
         scored = np.intersect1d(graph.edges_of(cand_docs), edges)   # ordenadas, como edges
+        # edges está ordenado, así que searchsorted da la posición de cada arista en gamma.
         g_s = gamma[np.searchsorted(edges, scored)]
         m_s = match(scored) if use_time else np.ones(len(scored))
 
+    # Pasos 4–5: s(ε) = m · (s(v₁) + s(v₂)) con PPR, o m · γ sin PPR.
     if cfg.ppr:
         if cfg.graph_scope == "subgraph":
+            # G_q: renumera las entidades de E_q de 0 a n-1 y construye su adyacencia simétrica.
             nodes, local = np.unique(np.concatenate([graph.e1[eq], graph.e2[eq]]), return_inverse=True)
             l1, l2 = local[:len(eq)], local[len(eq):]
             a = sp.coo_matrix((np.ones(len(eq)), (l1, l2)), shape=(len(nodes), len(nodes))).tocsr()
@@ -227,9 +291,11 @@ def score_query(graph: TemporalGraph, desc_emb: np.ndarray, q: np.ndarray, scope
                     for v in (int(graph.e1[e]), int(graph.e2[e])):
                         pers[ent_pos[v] if ent_pos is not None else v] += w
             info["semillas"] = int((pers > 0).sum())
+            # Salvo en modo soft, las semillas pesan todas lo mismo (como en el paper).
             if cfg.match != "soft":
                 pers = (pers > 0).astype(np.float64)
         rank = pagerank(adj, pers, cfg.damping)
+        # s(v) de las dos entidades de cada arista puntuada (traduciendo a índices locales si hace falta).
         if ent_pos is not None:
             sv1 = np.array([rank[ent_pos[int(v)]] for v in graph.e1[scored]])
             sv2 = np.array([rank[ent_pos[int(v)]] for v in graph.e2[scored]])
@@ -240,14 +306,17 @@ def score_query(graph: TemporalGraph, desc_emb: np.ndarray, q: np.ndarray, scope
         s_edge = m_s * g_s
 
     # Chunks: Σ s(ε) y Σ log(1 + γ) por (documento, chunk); documento = max (o suma) de sus chunks.
+    # Paso 6. acc[(doc, chunk)] = [Σ s(ε), Σ log(1 + γ_ε)]; en logaritmos,
+    # log s(c) = log Σ s(ε) + Σ log(1 + γ_ε).
     acc: dict[tuple[int, int], list[float]] = {}
     for e, s, g in zip(scored, s_edge, g_s):
         a = acc.setdefault((int(graph.doc[e]), int(graph.chunk[e])), [0.0, 0.0])
         a[0] += s
         a[1] += np.log1p(g)
+    # Paso 7: score del documento. "sum" se hace con logaddexp porque los valores son logaritmos.
     doc_scores: dict[int, float] = {}
     for (d, _), (s_sum, log_w) in acc.items():
-        if s_sum <= 0:
+        if s_sum <= 0:   # log(0) no existe: el chunk no puntúa
             continue
         val = np.log(s_sum) + (log_w if cfg.chunk_weight == "prod" else 0.0)
         if d not in doc_scores:

@@ -20,6 +20,8 @@ import argparse
 import sys
 from pathlib import Path
 
+# Permite importar el paquete reteco (en src/) sin instalarlo; por eso los imports que
+# siguen llevan "noqa: E402" (import que no está al principio del archivo).
 sys.path.insert(0, str(Path(__file__).resolve().parents[1] / "src"))
 
 import pandas as pd  # noqa: E402
@@ -28,10 +30,12 @@ from reteco.data import DOMAINS, load_qrels  # noqa: E402
 from reteco.temporal import temporal_match  # noqa: E402
 from reteco.tgraph import TG_DIR, load_facts, load_pool, load_qtime, pool_path  # noqa: E402
 
+# Modos de emparejamiento evaluados: etiqueta → (modo de temporal_match, umbral para contar "dentro").
 MODES = {"contained": ("contained", 1.0), "overlap": ("overlap", 1.0), "soft>=0.5": ("soft", 0.5)}
 
 
 def main() -> None:
+    """Calcula las métricas de TG0 por dominio, las imprime y las guarda en CSV."""
     parser = argparse.ArgumentParser(description=__doc__, formatter_class=argparse.RawDescriptionHelpFormatter)
     parser.add_argument("--subtrack", choices=["1a", "1b"], required=True)
     parser.add_argument("--pool", required=True)
@@ -50,22 +54,25 @@ def main() -> None:
         scopes = load_qtime(args.qtime, args.subtrack, dom, args.split)
         docs = {d for c in pool.values() for d in c}
         facts = load_facts(args.extractor, dom, docs)
-        times = {d: [f.time for f in fs if f.time is not None] for d, fs in facts.items()}
+        times = {d: [f.time for f in fs if f.time is not None] for d, fs in facts.items()}   # τ de cada documento
 
         row = {"domain": dom, "consultas": len(pool)}
         row["con_alcance"] = sum(bool(scopes.get(q)) for q in pool) / max(len(pool), 1)
+        # Recall del pool por consulta: gold (relevancia > 0) que están entre sus candidatos.
         rec = [len(set(c) & {d for d, r in qrels.get(q, {}).items() if r > 0}) / max(1, sum(r > 0 for r in qrels.get(q, {}).values()))
                for q, c in pool.items() if q in qrels]
         row["recall_pool"] = sum(rec) / max(len(rec), 1)
         row["doc_fechado"] = sum(bool(times.get(d)) for d in docs) / max(len(docs), 1)
         for label, (mode, thr) in MODES.items():
+            # Contadores: gold con hecho en T_q / gold totales, y lo mismo para no-gold.
             g_hit = g_n = n_hit = n_n = 0
             for q, cands in pool.items():
                 sc = scopes.get(q, [])
-                if not sc:
+                if not sc:   # solo cuentan las consultas con alcance
                     continue
                 gold = {d for d, r in qrels.get(q, {}).items() if r > 0}
                 for d in cands:
+                    # ¿Algún hecho del documento cae en T_q (con el umbral del modo)?
                     hit = any(temporal_match(t, sc, mode) >= thr for t in times.get(d, []))
                     if d in gold:
                         g_hit, g_n = g_hit + hit, g_n + 1
@@ -80,6 +87,9 @@ def main() -> None:
               f"fechados {row['doc_fechado']:.2f} · lift contained {row['lift[contained]']:.2f}", flush=True)
 
     df = pd.DataFrame(rows).set_index("domain")
+    # MACRO = media simple de cada columna sobre los dominios. Para el lift es la media de
+    # los cocientes por dominio (incluidos los 0 de dominios con muy pocas consultas con
+    # alcance), no el cociente de las medias: ver RESULTADOS_TGRAG.md §1.
     df.loc["MACRO"] = df.mean(numeric_only=True)
     out = TG_DIR / "diag" / f"tg0_{args.subtrack}_{args.pool}_{args.extractor}_qt-{args.qtime}_{args.split}.csv"
     out.parent.mkdir(parents=True, exist_ok=True)

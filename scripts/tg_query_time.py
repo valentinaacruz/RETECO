@@ -21,6 +21,8 @@ import json
 import sys
 from pathlib import Path
 
+# Permite importar el paquete reteco (en src/) sin instalarlo; por eso los imports que
+# siguen llevan "noqa: E402" (import que no está al principio del archivo).
 sys.path.insert(0, str(Path(__file__).resolve().parents[1] / "src"))
 
 from reteco.data import DOMAINS, clean_query, load_examples, load_guidance, load_steps, split_query  # noqa: E402
@@ -28,6 +30,8 @@ from reteco.queries import first_words  # noqa: E402
 from reteco.temporal import Scope, parse_normalized, query_scopes, range_span  # noqa: E402
 from reteco.tgraph import qtime_path  # noqa: E402
 
+# Prompt del LLM para T_q (en inglés, como las consultas). El id es el nombre del archivo
+# de caché: si se cambia el prompt, hay que cambiar el id. "{query}" se sustituye con replace.
 QTIME_PROMPT_ID = "tg_qtime_v1"
 QTIME_PROMPT = """-Goal-
 Given a user question that may ask a time-related question, identify every explicit or implicit temporal expression and determine the time scope needed to answer it.
@@ -61,6 +65,17 @@ Output:"""
 
 
 def llm_scopes(llm, item_id: str, text: str) -> list[Scope]:
+    """``T_q`` de un texto con el LLM.
+
+    Args:
+        llm: instancia de ``reteco.llm.LLM``.
+        item_id: id de la consulta o del paso (para la caché).
+        text: texto de la consulta.
+
+    Returns:
+        Lista de ``Scope`` sin duplicados. ``between`` se convierte en ``at`` sobre un
+        rango; los elementos con un tiempo que no se puede leer se ignoran.
+    """
     from reteco.llm import parse_json_block
     out = llm.generate(QTIME_PROMPT_ID, item_id, QTIME_PROMPT.replace("{query}", text))
     data = parse_json_block(out)
@@ -76,6 +91,7 @@ def llm_scopes(llm, item_id: str, text: str) -> list[Scope]:
             continue
         if logic == "between":
             end = parse_normalized(item.get("end")) or start
+            # Rango del inicio de "start" al final de "end" (el -1 compensa el +1 de range_span).
             scopes.append(Scope("at", range_span(min(start.start, end.start), max(start.end, end.end) - 1)))
         elif logic in ("at", "before", "after"):
             scopes.append(Scope(logic, start))
@@ -83,6 +99,7 @@ def llm_scopes(llm, item_id: str, text: str) -> list[Scope]:
 
 
 def main() -> None:
+    """Calcula ``T_q`` de cada consulta (o paso) y lo guarda por dominio y split."""
     parser = argparse.ArgumentParser(description=__doc__, formatter_class=argparse.RawDescriptionHelpFormatter)
     parser.add_argument("--subtrack", choices=["1a", "1b"], required=True)
     parser.add_argument("--method", choices=["rules", "rules-present", "llm", "oracle"], required=True)
@@ -99,11 +116,13 @@ def main() -> None:
         llm = LLM(args.backend, args.model, max_tokens=200)
 
     def scopes_of(item_id: str, text: str) -> list[Scope]:
+        """T_q de un texto con el método elegido (LLM o reglas)."""
         if args.method == "llm":
             return llm_scopes(llm, item_id, text)
         return query_scopes(text, present=args.method == "rules-present")
 
     def query_text(r: dict) -> str:
+        """Texto de la consulta que se analiza: con el LLM, título + primeras palabras (prompt más corto)."""
         if args.method == "llm":
             title, body = split_query(r["query"])
             return f"{title}\n{first_words(body, args.query_words)}"
@@ -114,6 +133,7 @@ def main() -> None:
             guidance = load_guidance(dom, split) if args.method == "oracle" else {}
 
             def parent_scopes(r: dict) -> list[Scope]:
+                """T_q de una consulta madre. El oráculo aplica las reglas a las anclas de guidance."""
                 if args.method == "oracle":
                     qg = guidance.get(r["id"], {}).get("query_guidance", {})
                     anchors = qg.get("key_time_anchors", []) + qg.get("query_temporal_signals", [])
@@ -128,6 +148,7 @@ def main() -> None:
                 for r in load_steps(dom, split):
                     parent = parent_scopes(r)
                     for s in r["steps"]:
+                        # El alcance propio del paso tiene prioridad; si no tiene, hereda el de la consulta.
                         own = [] if args.method == "oracle" else scopes_of(s["step_id"], s["step_instruction"])
                         out[s["step_id"]] = own or parent
             path = qtime_path(args.method, args.subtrack, dom, split)
