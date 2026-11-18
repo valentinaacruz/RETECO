@@ -4,15 +4,21 @@ Uso:
     .venv/bin/python scripts/run_experiment.py --subtrack 1a --retriever bm25 --variants cruda limpia
     .venv/bin/python scripts/run_experiment.py --subtrack 1b --retriever bge-base --variants all
     .venv/bin/python scripts/run_experiment.py --subtrack 1a --retriever bge-base@first --variants limpia
+    .venv/bin/python scripts/run_experiment.py --subtrack 1a --retriever splade-ed@maxpool --variants limpia
 
-Retrievers: ``bm25`` (baseline oficial) o un encoder de ``reteco.dense.MODELS``,
-opcionalmente con ``@first`` (score del primer trozo) en lugar del mejor trozo.
+Retrievers:
+    - ``bm25`` (baseline oficial);
+    - un encoder denso de ``reteco.dense.MODELS``, opcionalmente con ``@first`` (score
+      del primer trozo) en lugar del mejor trozo;
+    - un modelo SPLADE de ``reteco.splade.MODELS`` con la gramática
+      ``<modelo>[-q<N>][-noexp][@max|@first|@maxpool]`` (ver ``reteco.splade.parse_retriever``),
+      p. ej. ``splade-ed``, ``splade-ed@first`` o ``splade-v3-q64@maxpool``.
 Los runs ya calculados se reutilizan; ``--force`` los recalcula.
 Cada variante se compara con ``--ref`` (por defecto, el baseline oficial).
 
 Argumentos:
     --subtrack   1a o 1b.
-    --retriever  bm25, bge-small, bge-base, e5-base (con @first opcional).
+    --retriever  bm25, bge-small, bge-base, e5-base (con @first opcional) o SPLADE (arriba).
     --variants   nombres de ``reteco.queries.VARIANTS`` o ``all``.
     --split      split de evaluación (train por defecto; dev solo para la comprobación final).
     --domains    subconjunto de dominios (por defecto, los 13).
@@ -45,16 +51,25 @@ def open_index(retriever: str, domain: str):
     """Carga el índice del retriever; la importación es perezosa para no mezclar JVM y torch.
 
     Args:
-        retriever: ``"bm25"`` o ``"<encoder>[@first]"``.
+        retriever: ``"bm25"``, ``"<encoder>[@first]"`` o un nombre SPLADE
+            (``reteco.splade.parse_retriever``).
         domain: dominio.
 
     Returns:
-        Un ``OfficialStyleBM25`` o un ``DenseIndex``. Al denso se le añade el atributo
-        ``agg`` (``"max"`` o ``"first"``) para que ``search`` lo use.
+        Un ``OfficialStyleBM25``, un ``SpladeIndex`` o un ``DenseIndex``. A los dos últimos
+        se les fija el atributo ``agg`` (``"max"``, ``"first"`` o, solo SPLADE,
+        ``"maxpool"``) para que ``search`` lo use.
     """
     if retriever == "bm25":
         from reteco.bm25 import OfficialStyleBM25
         return OfficialStyleBM25(domain)
+    # A partir de aquí todo usa torch, así que importar reteco.splade no mezcla JVM y torch.
+    from reteco.splade import SpladeIndex, parse_retriever
+    spec = parse_retriever(retriever)
+    if spec:
+        index = SpladeIndex(spec["key"], domain, q_max_dims=spec["q_max_dims"], noexp=spec["noexp"])
+        index.agg = spec["agg"]
+        return index
     from reteco.dense import DenseIndex
     key, _, agg = retriever.partition("@")   # "bge-base@first" → ("bge-base", "first")
     index = DenseIndex(key, domain)
