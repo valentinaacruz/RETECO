@@ -76,6 +76,7 @@ scripts/
   oracle_class_terms.py    O5: ¿hay keywords de documento propias de cada clase?
   k4_diag.py               K4: desglose con fecha / sin fecha y por dominio
   temporal_profile_diag.py TT0: léxico n-grama → periodo y perfiles temporales
+  dev_eval.py              comprobación en dev: macro, pruebas pareadas y tabla por dominio
 tests/
   test_extraction.py       pruebas del extractor temporal y de K4
 ```
@@ -95,7 +96,7 @@ Instalación y datos: [`SETUP.md`](SETUP.md). Después, por ejemplo:
     --runs "bm25/rrf(limpia,titulo)" "bge-base/rrf(limpia,titulo)"         # híbrido
 ```
 
-Para la comprobación en dev se repiten los mismos comandos con `--split dev` y solo con las variantes finales (lista completa en [`RESULTADOS_EXPERIMENTOS.md`](RESULTADOS_EXPERIMENTOS.md) §2.12).
+Para la comprobación en dev se repiten los mismos comandos con `--split dev` y solo con las variantes finales (lista completa en [`RESULTADOS_EXPERIMENTOS.md`](RESULTADOS_EXPERIMENTOS.md) §2.12). Después, `scripts/dev_eval.py` imprime las tablas de dev del reporte.
 
 Los runs se guardan en `outputs/exp/runs/` y cada experimento añade una fila a `outputs/exp/resultados.csv` (ninguno de los dos se sube a git).
 

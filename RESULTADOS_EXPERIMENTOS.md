@@ -45,6 +45,7 @@ Resumen de lo implementado de [`PLAN_EXPERIMENTOS.md`](PLAN_EXPERIMENTOS.md) y d
 | [`oracle_class_terms.py`](scripts/oracle_class_terms.py) | O5: log-odds de términos de los gold frente a los hard negatives, por clase |
 | [`k4_diag.py`](scripts/k4_diag.py) | K4: cobertura y comparación base → K4 en todo train, con fecha / sin fecha y por dominio |
 | [`temporal_profile_diag.py`](scripts/temporal_profile_diag.py) | TT0: léxico n-grama → periodo, perfiles temporales y separación gold / no-gold en el pool del híbrido |
+| [`dev_eval.py`](scripts/dev_eval.py) | comprobación en dev (§2.12): macro, pruebas pareadas frente al baseline y al paso anterior, y nDCG@10 por dominio |
 
 ### Salidas (`outputs/exp/`)
 
@@ -390,6 +391,7 @@ Al final del proyecto se corrieron **una sola vez** en dev los cuatro sistemas d
 .venv/bin/python scripts/run_experiment.py --split dev --subtrack 1b --retriever bge-base --variants limpia+paso
 .venv/bin/python scripts/fuse_runs.py --split dev --subtrack 1a --weights 0.5 1 --runs "bm25/rrf(limpia,titulo)" "bge-base/rrf(limpia,titulo)"
 .venv/bin/python scripts/fuse_runs.py --split dev --subtrack 1b --weights 0.5 1 --runs bm25/titulo+paso_limpio bge-base/limpia+paso
+.venv/bin/python scripts/dev_eval.py    # macro, pruebas pareadas y tabla por dominio
 ```
 
 Δ frente a la fila anterior, con el p del test pareado (10,000 permutaciones) y los dominios que mejoran / empeoran. La última columna repite el nDCG@10 de train.
