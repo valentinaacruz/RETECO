@@ -28,7 +28,9 @@
 
 \title{Recuperación de documentos con razonamiento temporal en TEMPO:\\
 limpieza de consultas, embeddings y fusión híbrida}
-\author{[Autores]\\
+\author{Cruz Mendoza Valentina Ayelen\\
+Monroy Villegas Isaac\\
+{\small Instituto de Investigaciones en Matemáticas Aplicadas y en Sistemas (IIMAS), UNAM}\\
 Procesamiento del Lenguaje Natural --- Proyecto final}
 \date{Noviembre de 2026}
 
@@ -59,7 +61,7 @@ El objetivo del proyecto es mejorar la primera etapa de recuperación usando sol
 
 \paragraph{Recuperación léxica.} TF-IDF pondera cada término por su frecuencia en el documento y por la rareza del término en la colección \citep{sparckjones1972statistical,salton1988term}. BM25 \citep{robertson1994okapi,robertson2009probabilistic} es una variante de TF-IDF que satura la frecuencia del término y la normaliza por la longitud del documento. El baseline oficial de la tarea usa la fórmula de \texttt{LuceneBM25Model} de gensim \citep{rehurek2010gensim} con el analizador de Lucene de Pyserini \citep{lin2021pyserini}, que incluye el \emph{stemmer} de \citet{porter1980algorithm}.
 
-\paragraph{Embeddings.} Los recuperadores densos representan consulta y documento como vectores y buscan por similitud. Usamos BGE \citep{xiao2024cpack}, una familia de modelos de embeddings de propósito general, a través de la biblioteca \texttt{sentence-transformers} \citep{reimers2019sentence}. HyDE \citep{gao2023precise} propone buscar con una respuesta hipotética en lugar de con la pregunta; nosotros solo medimos su techo con la respuesta real (sección~\ref{sec:oraculos}).
+\paragraph{Embeddings.} Los recuperadores densos representan consulta y documento como vectores y buscan por similitud, con la misma idea que los embeddings de palabras como word2vec \citep{mikolov2013distributed}: textos con significado parecido quedan cerca en el espacio vectorial. Usamos BGE \citep{xiao2024cpack}, una familia de modelos de embeddings de propósito general, a través de la biblioteca \texttt{sentence-transformers} \citep{reimers2019sentence}. Por dentro, BGE es un codificador \emph{transformer} \citep{vaswani2017attention} del tipo de BERT \citep{devlin2019bert}, preentrenado por sus autores. Nosotros lo usamos como caja negra, igual que un modelo de word2vec ya entrenado: solo le pedimos el vector de cada texto, sin ajustarlo ni modificarlo, y no dependemos de los detalles de su arquitectura. HyDE \citep{gao2023precise} propone buscar con una respuesta hipotética en lugar de con la pregunta; nosotros solo medimos su techo con la respuesta real (sección~\ref{sec:oraculos}).
 
 \paragraph{Fusión de rankings.} \emph{Reciprocal Rank Fusion} (RRF) combina rankings usando solo la posición de cada documento, sin necesidad de que los scores sean comparables \citep{cormack2009reciprocal}.
 
@@ -131,7 +133,7 @@ Construimos variantes de la consulta sin ningún modelo:
 \subsection{Recuperador de embeddings}
 \label{sec:denso}
 
-Usamos \texttt{bge-base-en-v1.5} \citep{xiao2024cpack}, que produce vectores de 768 dimensiones. Como entre el 9~\% y el 18~\% de los documentos supera los 512 tokens, cada documento se parte en trozos de 254 tokens con un solape de 30, con un máximo de 4 trozos (los primeros $\sim$1,000 tokens). Los vectores se normalizan, y el score de un documento es el de su mejor trozo:
+Usamos \texttt{bge-base-en-v1.5} \citep{xiao2024cpack}, que produce vectores de 768 dimensiones. Es un codificador \emph{transformer} preentrenado que usamos tal cual, sin ajuste fino, solo para obtener los embeddings (ver la sección de trabajo relacionado). Como entre el 9~\% y el 18~\% de los documentos supera los 512 tokens, cada documento se parte en trozos de 254 tokens con un solape de 30, con un máximo de 4 trozos (los primeros $\sim$1,000 tokens). Los vectores se normalizan, y el score de un documento es el de su mejor trozo:
 \begin{equation}
 s(q,d) = \max_{c \in \mathrm{trozos}(d)} \mathbf{e}(p \oplus q)^{\top}\, \mathbf{e}(c),
 \end{equation}
