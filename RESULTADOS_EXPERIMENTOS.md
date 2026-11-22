@@ -1,6 +1,6 @@
-# Resultados de los experimentos — baseline, BM25, denso, híbrido, clasificación del razonamiento, K4 y perfil temporal (estado al 2026-11-21)
+# Resultados de los experimentos — baseline, BM25, denso, híbrido, clasificación del razonamiento, K4, perfil temporal y comprobación en dev (estado al 2026-11-22)
 
-Resumen de lo implementado de [`PLAN_EXPERIMENTOS.md`](PLAN_EXPERIMENTOS.md) y de los resultados obtenidos. El detalle del perfil temporal implícito con n-gramas está en [`RESULTADOS_PERFIL_TEMPORAL.md`](RESULTADOS_PERFIL_TEMPORAL.md). Todas las cifras son **macro nDCG@10 en train** (13 dominios), salvo que se indique otra cosa. Dev no se ha tocado.
+Resumen de lo implementado de [`PLAN_EXPERIMENTOS.md`](PLAN_EXPERIMENTOS.md) y de los resultados obtenidos. El detalle del perfil temporal implícito con n-gramas está en [`RESULTADOS_PERFIL_TEMPORAL.md`](RESULTADOS_PERFIL_TEMPORAL.md). Todas las cifras son **macro nDCG@10 en train** (13 dominios), salvo que se indique otra cosa. Dev se usó **una sola vez**, al final del proyecto y con la configuración ya fijada en train (§2.12).
 
 **Estado:**
 
@@ -14,6 +14,7 @@ Resumen de lo implementado de [`PLAN_EXPERIMENTOS.md`](PLAN_EXPERIMENTOS.md) y d
 | K4 · décadas y siglos de las fechas de la consulta | ✅ §2.9. ❌ **No ayuda** en ningún brazo ni en el híbrido: se cierra |
 | TT0 · perfil temporal implícito con n-gramas (*focus time*) | ✅ §2.10 (detalle en [`RESULTADOS_PERFIL_TEMPORAL.md`](RESULTADOS_PERFIL_TEMPORAL.md)). Señal débil (AUC ≈ 0.6) solo en los dominios históricos; no se adopta |
 | 5 · Reescritura con LLM | fuera del alcance del proyecto |
+| Dev · comprobación final | ✅ §2.12. La progresión baseline → BM25 → denso → híbrido se repite; el híbrido da **0.2519 / 0.2971** y supera al denso de forma significativa en 1a y 1b |
 
 ---
 
@@ -47,7 +48,7 @@ Resumen de lo implementado de [`PLAN_EXPERIMENTOS.md`](PLAN_EXPERIMENTOS.md) y d
 
 ### Salidas (`outputs/exp/`)
 
-- `runs/<retriever>/<variante>/<dominio>__train.pkl`: rankings top-1000.
+- `runs/<retriever>/<variante>/<dominio>__<split>.pkl`: rankings top-1000 (`__train` para todo el proyecto; `__dev` solo para los cuatro sistemas de §2.12).
 - `resultados.csv`: una fila por experimento (nDCG@10, R@10/100/1000, Δ, p, dominios que mejoran / empeoran).
 - `oracles/`: tablas de O4 y O5.
 - `dense/bge-base/`: embeddings por dominio.
@@ -219,7 +220,7 @@ Lecturas:
 - **1b cumple el criterio de aceptación** (Δ ≥ 0.01, p < 0.05, 8/13 dominios) con w = 0.3–0.5. **1a se queda cerca, sin significancia** (+0.011, p = 0.09).
 - **Hay que fusionar las mejores variantes de cada retriever.** Fusionar las variantes oficiales empeora.
 - **El híbrido sube el recall** (R@1000 de 0.917 a 0.939 en 1b): encuentra más gold entre los 1000 primeros.
-- w se eligió en train y la meseta es ancha, así que el riesgo de sobreajuste es bajo. Se fija **w = 0.5** (valor redondo dentro de la meseta) para ambos subtracks hasta la comprobación en dev.
+- w se eligió en train y la meseta es ancha, así que el riesgo de sobreajuste es bajo. Se fija **w = 0.5** (valor redondo dentro de la meseta) para ambos subtracks. En dev (§2.12) se usó tal cual y el híbrido cumple el criterio en las dos subtareas, así que w no quedó sobreajustado.
 
 ### 2.9 K4 · Década y siglo de las fechas de la consulta (train)
 
@@ -378,6 +379,61 @@ Lecturas:
 
 Salidas: `outputs/exp/oracles/O4_routing_<subtrack>_<grupo>_{bm25,duro,suave}.csv` (tablas por grupo).
 
+### 2.12 Comprobación única en dev
+
+Al final del proyecto se corrieron **una sola vez** en dev los cuatro sistemas de la tabla principal, con la configuración fijada en train: las mismas variantes de consulta, RRF con k = 60 y BM25 con peso 0.5. No se ajustó nada después. Dev tiene 519 consultas (1a) y 1,214 pasos (1b) de los mismos 13 dominios, distintos de los de train. K4, TT0 y el enrutamiento de O4 no se evaluaron en dev porque no se adoptaron.
+
+```bash
+.venv/bin/python scripts/run_experiment.py --split dev --subtrack 1a --retriever bm25 --variants cruda "rrf(limpia,titulo)"
+.venv/bin/python scripts/run_experiment.py --split dev --subtrack 1b --retriever bm25 --variants oficial titulo+paso_limpio
+.venv/bin/python scripts/run_experiment.py --split dev --subtrack 1a --retriever bge-base --variants "rrf(limpia,titulo)"
+.venv/bin/python scripts/run_experiment.py --split dev --subtrack 1b --retriever bge-base --variants limpia+paso
+.venv/bin/python scripts/fuse_runs.py --split dev --subtrack 1a --weights 0.5 1 --runs "bm25/rrf(limpia,titulo)" "bge-base/rrf(limpia,titulo)"
+.venv/bin/python scripts/fuse_runs.py --split dev --subtrack 1b --weights 0.5 1 --runs bm25/titulo+paso_limpio bge-base/limpia+paso
+```
+
+Δ frente a la fila anterior, con el p del test pareado (10,000 permutaciones) y los dominios que mejoran / empeoran. La última columna repite el nDCG@10 de train.
+
+| Sub | Sistema | nDCG@10 dev | Δ | p | +/− dom | R@100 | R@1000 | Train |
+|---|---|---:|---:|---:|---:|---:|---:|---:|
+| 1a | Baseline oficial (`bm25/cruda`) | 0.1147 | — | — | — | 0.404 | 0.660 | 0.1075 |
+| 1a | BM25 `rrf(limpia,titulo)` | 0.1716 | +0.057 | < 0.001 | 11/2 | 0.518 | 0.772 | 0.1528 |
+| 1a | Denso `bge-base` `rrf(limpia,titulo)` | 0.2226 | +0.051 | 0.002 | 8/5 | 0.660 | 0.893 | 0.2277 |
+| 1a | **Híbrido BM25 (w 0.5) + denso** | **0.2519** | +0.029 | < 0.001 | 9/4 | **0.692** | **0.900** | 0.2367 |
+| 1b | Baseline oficial (`bm25/oficial`) | 0.1177 | — | — | — | 0.443 | 0.716 | 0.1024 |
+| 1b | BM25 `titulo+paso_limpio` | 0.1838 | +0.066 | < 0.001 | 11/2 | 0.556 | 0.807 | 0.1660 |
+| 1b | Denso `bge-base` `limpia+paso` | 0.2610 | +0.077 | < 0.001 | 12/1 | 0.750 | 0.922 | 0.2449 |
+| 1b | **Híbrido BM25 (w 0.5) + denso** | **0.2971** | +0.036 | < 0.001 | 11/2 | **0.779** | **0.939** | 0.2610 |
+
+Por dominio (nDCG@10 en dev; n = consultas en 1a, pasos en 1b):
+
+| Dominio | n 1a | Base | BM25 | Denso | Híbrido | n 1b | Base | BM25 | Denso | Híbrido |
+|---|---:|---:|---:|---:|---:|---:|---:|---:|---:|---:|
+| bitcoin | 30 | 0.037 | 0.094 | 0.187 | **0.239** | 56 | 0.030 | 0.118 | 0.243 | **0.262** |
+| cardano | 15 | 0.103 | 0.102 | 0.132 | **0.189** | 33 | 0.063 | 0.119 | 0.168 | **0.212** |
+| economics | 25 | 0.047 | 0.041 | 0.151 | **0.183** | 51 | 0.046 | 0.119 | 0.179 | **0.219** |
+| genealogy | 35 | 0.195 | 0.275 | 0.250 | **0.304** | 68 | 0.218 | 0.211 | 0.301 | **0.369** |
+| history | 240 | 0.087 | 0.119 | **0.260** | 0.249 | 636 | 0.102 | 0.179 | 0.282 | **0.291** |
+| hsm | 45 | 0.249 | 0.364 | 0.338 | **0.415** | 105 | 0.214 | 0.256 | 0.240 | **0.350** |
+| iota | 3 | 0.331 | **0.450** | 0.327 | 0.347 | 8 | 0.420 | 0.362 | 0.460 | **0.498** |
+| law | 11 | 0.057 | 0.117 | **0.208** | 0.206 | 23 | 0.055 | 0.187 | 0.288 | **0.303** |
+| monero | 19 | 0.032 | 0.070 | 0.144 | **0.160** | 28 | 0.011 | 0.029 | 0.119 | **0.186** |
+| politics | 45 | 0.263 | 0.391 | 0.358 | **0.483** | 119 | 0.237 | 0.275 | 0.297 | **0.404** |
+| quant | 10 | 0.024 | **0.039** | 0.000 | 0.019 | 15 | 0.040 | 0.086 | 0.108 | **0.112** |
+| travel | 30 | 0.044 | 0.071 | **0.211** | 0.162 | 52 | 0.065 | 0.185 | **0.258** | 0.212 |
+| workplace | 11 | 0.023 | 0.100 | **0.328** | 0.320 | 20 | 0.030 | 0.263 | **0.451** | 0.444 |
+| **Macro** | 519 | 0.115 | 0.172 | 0.223 | **0.252** | 1214 | 0.118 | 0.184 | 0.261 | **0.297** |
+
+Lecturas:
+
+- **La progresión de train se repite en dev** y cada paso mejora al anterior de forma significativa. El híbrido es 2.2 veces el baseline en 1a (+120 %) y 2.5 veces en 1b (+152 %), con cifras algo mejores que en train.
+- **El híbrido cumple el criterio de aceptación frente al denso en las dos subtareas** (+0.029, 9/13 en 1a; +0.036, 11/13 en 1b; ambos p < 0.001). En train solo lo cumplía en 1b. El peso 0.5 de BM25, elegido en train, no estaba sobreajustado.
+- **Frente al baseline, el híbrido mejora en 12/13 dominios en 1a y en 13/13 en 1b.** La excepción es `quant` en 1a (10 consultas), donde todos los sistemas quedan por debajo de 0.04.
+- Los dominios con menos de 15 consultas en 1a (`iota`, `law`, `quant`, `workplace`) son muy ruidosos: `iota` tiene 3.
+- Dev comparte dominios y corpus con train, así que no sustituye al test oficial.
+
+Salidas: `outputs/exp/runs/<retriever>/<variante>/<dominio>__dev.pkl` y las filas `split=dev` de `resultados.csv`.
+
 ---
 
 ## 3. Conclusiones
@@ -389,7 +445,7 @@ Salidas: `outputs/exp/oracles/O4_routing_<subtrack>_<grupo>_{bm25,duro,suave}.cs
 3. **Clasificar el tipo de razonamiento no aporta**: ni con etiquetas perfectas mejora el ranking, ni eligiendo entre variantes de BM25 (§2.4) ni entre BM25, denso e híbrido o sus pesos (§2.11). **Fase 3 cerrada.** Tampoco sirve elegir el retriever por dominio. La variación entre consultas es grande (oráculo por consulta 0.30 / 0.34), pero no la explica el tipo de consulta.
 4. **No hay un vocabulario de documento por clase** (O5). Los gold se distinguen por ser contenido narrativo y no bibliografía, igual en todas las clases.
 5. **Los embeddings son la base** (§2.7). Con `bge-base`, 1a `rrf(limpia,titulo)` da 0.228 y 1b `limpia+paso` da 0.245, unas 2.1–2.4 veces el baseline oficial. HyDE con respuesta perfecta solo añade ~0.007.
-6. **La mejor configuración del proyecto es el híbrido BM25 + denso con BM25 a medio peso** (w = 0.5, §2.8): **0.2367 en 1a y 0.2610 en 1b**, 2.2–2.5 veces el baseline, con R@1000 de 0.870 y 0.939. En 1b la mejora sobre el denso solo es significativa. Falta confirmarlo en dev, al final.
+6. **La mejor configuración del proyecto es el híbrido BM25 + denso con BM25 a medio peso** (w = 0.5, §2.8): **0.2367 en 1a y 0.2610 en 1b**, 2.2–2.5 veces el baseline, con R@1000 de 0.870 y 0.939. En train la mejora sobre el denso solo es significativa en 1b. **En dev se confirma** (§2.12): **0.2519 en 1a y 0.2971 en 1b**, significativamente mejor que el denso solo en las dos subtareas.
 7. **Añadir la década y el siglo de las fechas de la consulta (K4) no ayuda** (§2.9). Mete ruido en BM25 y es neutro en el denso y en el híbrido. Las pequeñas subidas que se vieron vienen de añadir un texto más a la fusión, no de las formas temporales.
 8. **El periodo implícito de un texto se puede inferir de sus n-gramas, pero apenas separa gold de no-gold mejor que el híbrido** (§2.10; [`RESULTADOS_PERFIL_TEMPORAL.md`](RESULTADOS_PERFIL_TEMPORAL.md)). En `history` y `hsm` la fusión gana algo (+0.007 a +0.011, elegida en muestra), pero no es estable ni mueve la macro.
 9. **Lectura de conjunto:** tras K4 y TT0, dos maneras distintas de usar el tiempo de forma explícita (fechas con regex; periodo implícito con n-gramas y una cadena de Markov), la conclusión es la misma: el híbrido ya captura casi toda la coincidencia temporal que se puede sacar sin entender la consulta. Los candidatos del top-100 ya hablan del mismo tema y de la misma época; lo que distingue al gold es otra cosa (que responda a la pregunta, que sea narrativo y no bibliográfico).
@@ -405,4 +461,4 @@ Salidas: `outputs/exp/oracles/O4_routing_<subtrack>_<grupo>_{bm25,duro,suave}.cs
 7. Probar el rasgo "bibliografía/boilerplate" (O5) como penalización suave del score.
 8. Probar por separado, en todos los pasos de 1b, el texto extra "título. paso limpio" fusionado con RRF en el brazo denso (+0.005 en el 45 % de los pasos, §2.9).
 9. Si se retoma TT0, elegir la fusión con validación cruzada en los dominios históricos y medirla con test pareado.
-10. Comprobación única en dev del híbrido (y de lo que pase el criterio en train), al final.
+10. ✅ Comprobación única en dev de los cuatro sistemas de la tabla principal (§2.12): se confirma la progresión y el híbrido.

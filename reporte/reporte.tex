@@ -4,7 +4,7 @@
 %
 % Compilación:  tectonic reporte.tex        (o pdflatex + bibtex + pdflatex x2)
 % Versión Word: se genera con pandoc a partir de este archivo (ver README del reporte).
-% Todas las cifras son de train; dev no se ha usado.
+% Las decisiones se tomaron en train; dev se usó una sola vez, al final (sección sec:res-dev).
 % =============================================================================
 \documentclass[11pt,a4paper]{article}
 
@@ -39,7 +39,7 @@ Procesamiento del Lenguaje Natural --- Proyecto final}
 
 % -----------------------------------------------------------------------------
 \begin{abstract}
-Trabajamos sobre el track~1 de RETECO, la Tarea~1 de SemEval-2027, basado en el benchmark TEMPO \citep{abdallah2026tempo}: dada una pregunta de StackExchange que exige razonar sobre el tiempo, hay que recuperar los documentos que la responden dentro del corpus de su dominio (13 dominios, 1.17~M documentos). Usamos solo técnicas vistas en la materia ---expresiones regulares, TF-IDF, embeddings, n-gramas, Jaccard y cadenas de Markov--- y BM25 como variante de TF-IDF. Partiendo del baseline oficial (macro nDCG@10 en train de 0.1075 en la subtarea 1a y 0.1024 en la 1b), mostramos que limpiar y acortar la consulta con expresiones regulares ya sube el resultado a 0.1528 y 0.1660 sin ningún modelo; que un recuperador de embeddings (\texttt{bge-base-en-v1.5}) lo lleva a 0.2277 y 0.2449; y que su fusión con BM25 a medio peso mediante \emph{Reciprocal Rank Fusion} alcanza 0.2367 y 0.2610, es decir, 2.2 y 2.5 veces el baseline. Además evaluamos cuatro formas de usar el tiempo o el tipo de razonamiento de forma explícita: enrutar la consulta según su clase de razonamiento, buscar un vocabulario de documento por clase, añadir la década y el siglo de las fechas de la consulta y estimar un perfil temporal implícito con n-gramas y una cadena de Markov, adaptado del \emph{document focus time} de \citet{jatowt2013focus}. Ninguna mejora de forma estable al sistema híbrido, y analizamos por qué.
+Trabajamos sobre el track~1 de RETECO, la Tarea~1 de SemEval-2027, basado en el benchmark TEMPO \citep{abdallah2026tempo}: dada una pregunta de StackExchange que exige razonar sobre el tiempo, hay que recuperar los documentos que la responden dentro del corpus de su dominio (13 dominios, 1.17~M documentos). Usamos solo técnicas vistas en la materia ---expresiones regulares, TF-IDF, embeddings, n-gramas, Jaccard y cadenas de Markov--- y BM25 como variante de TF-IDF. Partiendo del baseline oficial (macro nDCG@10 en train de 0.1075 en la subtarea 1a y 0.1024 en la 1b), mostramos que limpiar y acortar la consulta con expresiones regulares ya sube el resultado a 0.1528 y 0.1660 sin ningún modelo; que un recuperador de embeddings (\texttt{bge-base-en-v1.5}) lo lleva a 0.2277 y 0.2449; y que su fusión con BM25 a medio peso mediante \emph{Reciprocal Rank Fusion} alcanza 0.2367 y 0.2610, es decir, 2.2 y 2.5 veces el baseline. En una única comprobación en dev, con la configuración fijada en train, el híbrido obtiene 0.2519 y 0.2971 (2.2 y 2.5 veces el baseline en dev) y supera al recuperador denso solo de forma significativa en ambas subtareas. Además evaluamos cuatro formas de usar el tiempo o el tipo de razonamiento de forma explícita: enrutar la consulta según su clase de razonamiento, buscar un vocabulario de documento por clase, añadir la década y el siglo de las fechas de la consulta y estimar un perfil temporal implícito con n-gramas y una cadena de Markov, adaptado del \emph{document focus time} de \citet{jatowt2013focus}. Ninguna mejora de forma estable al sistema híbrido, y analizamos por qué.
 \end{abstract}
 
 % -----------------------------------------------------------------------------
@@ -80,7 +80,7 @@ El objetivo del proyecto es mejorar la primera etapa de recuperación usando sol
 \end{equation}
 donde $\mathrm{rel}_i \in \{0,1\}$ indica si el documento en la posición $i$ es relevante e IDCG es el DCG del ranking ideal. Se promedia dentro de cada dominio y luego entre los 13 dominios (\emph{macro}), así que \texttt{iota}, con 7 consultas, pesa lo mismo que \texttt{history}. Informamos también el recall a 100 y a 1000 (R@100, R@1000), que mide qué parte de los relevantes llega a la lista de candidatos. Todo se evalúa con \texttt{pytrec\_eval} \citep{vangysel2018pytreceval}, la misma biblioteca que el evaluador oficial.
 
-\paragraph{Protocolo.} Todas las decisiones se toman en train; dev queda reservado para una única comprobación final, que todavía no se ha hecho. En la búsqueda nunca se usan el formato de los identificadores de los documentos (que delata a los relevantes, sección~\ref{sec:eda}), la respuesta aceptada ni \texttt{guidance}; estos campos solo se usan para medir techos (oráculos) y para analizar. Una mejora se acepta si cumple tres condiciones frente a la referencia:
+\paragraph{Protocolo.} Todas las decisiones se toman en train; dev queda reservado para una única comprobación final, que se hizo al final del proyecto con la configuración ya fijada (sección~\ref{sec:res-dev}). En la búsqueda nunca se usan el formato de los identificadores de los documentos (que delata a los relevantes, sección~\ref{sec:eda}), la respuesta aceptada ni \texttt{guidance}; estos campos solo se usan para medir techos (oráculos) y para analizar. Una mejora se acepta si cumple tres condiciones frente a la referencia:
 \begin{itemize}
   \item $\Delta$ macro nDCG@10 $\geq +0.01$;
   \item $p < 0.05$ en un test pareado de aleatorización \citep{smucker2007comparison}: bajo la hipótesis nula se invierte al azar el signo de la diferencia de cada consulta y se recalcula la diferencia macro (10,000 permutaciones, bilateral);
@@ -185,7 +185,7 @@ donde $C(g,b)$ es la masa de $b$ en las oraciones fechadas que contienen $g$, $n
 \section{Resultados}
 \label{sec:resultados}
 
-Todas las cifras son de train. La tabla~\ref{tab:principal} resume la progresión de los sistemas principales, y la figura~\ref{fig:dominios} y la tabla~\ref{tab:dominios} la desglosan por dominio.
+Salvo en la sección~\ref{sec:res-dev}, todas las cifras son de train. La tabla~\ref{tab:principal} resume la progresión de los sistemas principales, y la figura~\ref{fig:dominios} y la tabla~\ref{tab:dominios} la desglosan por dominio.
 
 \begin{table}[t]
 \centering
@@ -254,7 +254,7 @@ El recuperador denso \textbf{duplica el baseline} y supera con holgura a la mejo
 \subsection{Fusión híbrida}
 \label{sec:res-hibrido}
 
-La fusión \textbf{solo ayuda si BM25 pesa menos que el denso} (tabla~\ref{tab:hibrido}). Con pesos iguales no gana nada, porque BM25 es mucho más débil y mete ruido en las primeras posiciones. Con BM25 a peso 0.3--0.6 el resultado forma una meseta (0.234--0.239 en 1a y 0.258--0.261 en 1b), así que el riesgo de sobreajustar el peso es bajo, y fijamos $w = 0.5$. En 1b el híbrido cumple el criterio de aceptación frente al denso solo (+0.016, $p = 0.04$, 8/13 dominios); en 1a se queda cerca, sin significancia. Fusionar las variantes oficiales de ambos recuperadores, en lugar de las mejores, empeora ($-0.027$ en 1b), así que la limpieza de la consulta sigue siendo necesaria. El híbrido también sube el recall (R@1000 de 0.917 a 0.939 en 1b).
+La fusión \textbf{solo ayuda si BM25 pesa menos que el denso} (tabla~\ref{tab:hibrido}). Con pesos iguales no gana nada, porque BM25 es mucho más débil y mete ruido en las primeras posiciones. Con BM25 a peso 0.3--0.6 el resultado forma una meseta (0.234--0.239 en 1a y 0.258--0.261 en 1b), así que el riesgo de sobreajustar el peso es bajo, y fijamos $w = 0.5$. En 1b el híbrido cumple el criterio de aceptación frente al denso solo (+0.016, $p = 0.04$, 8/13 dominios); en 1a se queda cerca, sin significancia. En dev lo cumple en ambas subtareas (sección~\ref{sec:res-dev}). Fusionar las variantes oficiales de ambos recuperadores, en lugar de las mejores, empeora ($-0.027$ en 1b), así que la limpieza de la consulta sigue siendo necesaria. El híbrido también sube el recall (R@1000 de 0.917 a 0.939 en 1b).
 
 \begin{table}[t]
 \centering
@@ -396,6 +396,65 @@ hsm      & 1b & 254  & 0.635 & 0.603 & 0.596 & 0.82 & 0.3445 & 0.3511 (+0.007) \
 \end{tabular}
 \end{table}
 
+\subsection{Comprobación en dev}
+\label{sec:res-dev}
+
+Al final del proyecto corrimos una sola vez en dev los cuatro sistemas de la tabla~\ref{tab:principal}, con la configuración fijada en train: las mismas variantes de consulta, RRF con $k = 60$ y BM25 con peso 0.5. No se ajustó nada después. Dev tiene 519 consultas (1a) y 1,214 pasos (1b) de los mismos 13 dominios, distintos de los de train. K4, TT0 y el enrutamiento de O4 no se evaluaron en dev, porque no se adoptaron.
+
+La tabla~\ref{tab:dev} muestra que \textbf{la progresión de train se repite en dev}. El híbrido llega a 0.2519 en 1a y 0.2971 en 1b, 2.2 y 2.5 veces el baseline, con cifras incluso algo mejores que en train. Cada paso mejora al anterior de forma significativa. En particular, el híbrido supera al denso solo en +0.029 en 1a ($p < 0.001$, 9/13 dominios) y en +0.036 en 1b ($p < 0.001$, 11/13), así que en dev cumple el criterio de aceptación en las dos subtareas, mientras que en train solo lo cumplía en 1b. Frente al baseline, el híbrido mejora en 12 de 13 dominios en 1a y en los 13 en 1b. La única excepción es \texttt{quant} en 1a, con 10 consultas en dev, donde todos los sistemas quedan por debajo de 0.04.
+
+\begin{table}[t]
+\centering
+\caption{Comprobación única en dev de los sistemas de la tabla~\ref{tab:principal}, con la configuración fijada en train. $\Delta$ frente a la fila anterior, con el $p$ del test pareado y los dominios que mejoran / empeoran. La última columna repite el nDCG@10 de train para comparar.}
+\label{tab:dev}
+\footnotesize
+\setlength{\tabcolsep}{4pt}
+\begin{tabular}{llrrrrr}
+\toprule
+Sub. & Sistema & nDCG@10 & $\Delta$ ($p$; dom.) & R@100 & R@1000 & Train \\
+\midrule
+1a & Baseline oficial & 0.1147 & --- & 0.404 & 0.660 & 0.1075 \\
+   & BM25, \texttt{rrf(limpia,titulo)} & 0.1716 & +0.057 ($<$0.001; 11/2) & 0.518 & 0.772 & 0.1528 \\
+   & Denso \texttt{bge-base} & 0.2226 & +0.051 (0.002; 8/5) & 0.660 & 0.893 & 0.2277 \\
+   & \textbf{Híbrido BM25 (w 0.5) + denso} & \textbf{0.2519} & +0.029 ($<$0.001; 9/4) & \textbf{0.692} & \textbf{0.900} & 0.2367 \\
+\midrule
+1b & Baseline oficial & 0.1177 & --- & 0.443 & 0.716 & 0.1024 \\
+   & BM25, \texttt{titulo+paso\_limpio} & 0.1838 & +0.066 ($<$0.001; 11/2) & 0.556 & 0.807 & 0.1660 \\
+   & Denso \texttt{bge-base} & 0.2610 & +0.077 ($<$0.001; 12/1) & 0.750 & 0.922 & 0.2449 \\
+   & \textbf{Híbrido BM25 (w 0.5) + denso} & \textbf{0.2971} & +0.036 ($<$0.001; 11/2) & \textbf{0.779} & \textbf{0.939} & 0.2610 \\
+\bottomrule
+\end{tabular}
+\end{table}
+
+\begin{table}[t]
+\centering
+\caption{nDCG@10 por dominio en dev. $n$ es el número de consultas (1a) o pasos (1b). Mismas columnas que la tabla~\ref{tab:dominios}. Los dominios con menos de 15 consultas (\texttt{iota}, \texttt{law}, \texttt{quant}, \texttt{workplace} en 1a) son muy ruidosos.}
+\label{tab:dominios-dev}
+\small
+\begin{tabular}{lrrrrrrrrrr}
+\toprule
+ & \multicolumn{5}{c}{1a} & \multicolumn{5}{c}{1b} \\
+Dominio & $n$ & Base & BM25 & Denso & Híbrido & $n$ & Base & BM25 & Denso & Híbrido \\
+\midrule
+bitcoin   & 30  & 0.037 & 0.094 & 0.187 & \textbf{0.239} & 56  & 0.030 & 0.118 & 0.243 & \textbf{0.262} \\
+cardano   & 15  & 0.103 & 0.102 & 0.132 & \textbf{0.189} & 33  & 0.063 & 0.119 & 0.168 & \textbf{0.212} \\
+economics & 25  & 0.047 & 0.041 & 0.151 & \textbf{0.183} & 51  & 0.046 & 0.119 & 0.179 & \textbf{0.219} \\
+genealogy & 35  & 0.195 & 0.275 & 0.250 & \textbf{0.304} & 68  & 0.218 & 0.211 & 0.301 & \textbf{0.369} \\
+history   & 240 & 0.087 & 0.119 & \textbf{0.260} & 0.249 & 636 & 0.102 & 0.179 & 0.282 & \textbf{0.291} \\
+hsm       & 45  & 0.249 & 0.364 & 0.338 & \textbf{0.415} & 105 & 0.214 & 0.256 & 0.240 & \textbf{0.350} \\
+iota      & 3   & 0.331 & \textbf{0.450} & 0.327 & 0.347 & 8   & 0.420 & 0.362 & 0.460 & \textbf{0.498} \\
+law       & 11  & 0.057 & 0.117 & \textbf{0.208} & 0.206 & 23  & 0.055 & 0.187 & 0.288 & \textbf{0.303} \\
+monero    & 19  & 0.032 & 0.070 & 0.144 & \textbf{0.160} & 28  & 0.011 & 0.029 & 0.119 & \textbf{0.186} \\
+politics  & 45  & 0.263 & 0.391 & 0.358 & \textbf{0.483} & 119 & 0.237 & 0.275 & 0.297 & \textbf{0.404} \\
+quant     & 10  & 0.024 & \textbf{0.039} & 0.000 & 0.019 & 15  & 0.040 & 0.086 & 0.108 & \textbf{0.112} \\
+travel    & 30  & 0.044 & 0.071 & \textbf{0.211} & 0.162 & 52  & 0.065 & 0.185 & \textbf{0.258} & 0.212 \\
+workplace & 11  & 0.023 & 0.100 & \textbf{0.328} & 0.320 & 20  & 0.030 & 0.263 & \textbf{0.451} & 0.444 \\
+\midrule
+Macro     & 519 & 0.115 & 0.172 & 0.223 & \textbf{0.252} & 1214 & 0.118 & 0.184 & 0.261 & \textbf{0.297} \\
+\bottomrule
+\end{tabular}
+\end{table}
+
 % -----------------------------------------------------------------------------
 \section{Discusión}
 \label{sec:discusion}
@@ -406,18 +465,18 @@ hsm      & 1b & 254  & 0.635 & 0.603 & 0.596 & 0.82 & 0.3445 & 0.3511 (+0.007) \
   \item \textbf{Embeddings} (+0.075 / +0.079 sobre la mejor variante de BM25): resuelven buena parte del desajuste de vocabulario que mostró el análisis exploratorio, porque encuentran documentos que hablan del tema con otras palabras.
   \item \textbf{Fusión con BM25 a medio peso} (+0.009 / +0.016 sobre el denso): BM25 aporta la coincidencia exacta de nombres propios, años y términos técnicos, que el denso a veces pierde, siempre que no pese tanto como para meter ruido arriba.
 \end{enumerate}
-Cada paso exige elegir bien la variante de consulta de cada recuperador: BM25 quiere textos cortos y el denso textos completos y limpios.
+Cada paso exige elegir bien la variante de consulta de cada recuperador: BM25 quiere textos cortos y el denso textos completos y limpios. En dev la progresión se repite con la configuración fijada en train: de 0.1147 a 0.2519 en 1a (+120~\%) y de 0.1177 a 0.2971 en 1b (+152~\%), con aportes de +0.057 / +0.066 por la limpieza, +0.051 / +0.077 por los embeddings y +0.029 / +0.036 por la fusión. Que la fusión aporte incluso más en dev que en train sugiere que el peso de BM25 elegido en train no estaba sobreajustado.
 
 \paragraph{Por qué el tiempo explícito no ayuda.} Probamos cuatro formas de usar el tiempo o el tipo de razonamiento, y ninguna mejora el híbrido de forma estable. La explicación común es que \textbf{los candidatos del híbrido ya comparten tema y época con la consulta}. Añadir la década o el siglo (K4) no distingue entre documentos que hablan del mismo periodo, y el perfil implícito (TT0) fecha ``la época'' con un error de décadas, como ya observaban \citet{jatowt2013focus}, justo lo que el híbrido ya comparte. El tipo de razonamiento tampoco decide qué estrategia conviene (O4): la fusión ya absorbe las diferencias entre recuperadores. Lo que distingue a un documento relevante dentro del grupo de candidatos es otra cosa: que responda a la pregunta y que sea contenido narrativo, no una página bibliográfica (O5). Esto es coherente con TEMPO, donde quitar las expresiones temporales de la consulta apenas cambia el resultado de los recuperadores.
 
-\paragraph{Limitaciones.} Todas las cifras son de train; dev todavía no se ha usado, así que los resultados pueden estar algo sobreestimados, aunque las decisiones principales (las variantes de consulta y el peso de BM25) se tomaron sobre mesetas amplias. Los dominios pequeños son muy ruidosos (\texttt{iota} tiene 7 consultas y pesa 1/13 de la macro). Los juicios de relevancia son incompletos: en la revisión manual, el primer documento recuperado a menudo era relevante sin estar marcado. Nuestras cifras no son directamente comparables con las del paper de TEMPO, que evalúa sobre train y dev juntos y con el corpus anterior a la deduplicación. Por último, la codificación densa en GPU no es del todo determinista (diferencias de $\pm$0.0005).
+\paragraph{Limitaciones.} Las decisiones se tomaron en train y dev se usó una sola vez. Dev confirma los resultados, pero comparte dominios y corpus con train y no sustituye al test oficial, cuyos juicios de relevancia no son públicos. Los dominios pequeños son muy ruidosos: \texttt{iota} tiene 7 consultas en train y 3 en dev, y pesa 1/13 de la macro. Los juicios de relevancia son incompletos: en la revisión manual, el primer documento recuperado a menudo era relevante sin estar marcado. Nuestras cifras no son directamente comparables con las del paper de TEMPO, que evalúa sobre train y dev juntos y con el corpus anterior a la deduplicación. Por último, la codificación densa en GPU no es del todo determinista (diferencias de $\pm$0.0005).
 
 % -----------------------------------------------------------------------------
 \section{Conclusiones y trabajo futuro}
 
-Con técnicas de la materia y sin ningún modelo de lenguaje generativo, el sistema híbrido BM25 + embeddings con BM25 a medio peso alcanza un macro nDCG@10 de 0.2367 en 1a y 0.2610 en 1b, 2.2 y 2.5 veces el baseline oficial. Las mayores ganancias vienen de limpiar la consulta y de añadir un recuperador semántico, no de modelar el tiempo. Clasificar el tipo de razonamiento, buscar vocabulario por clase, añadir formas temporales gruesas y estimar el periodo implícito con n-gramas y una cadena de Markov no mejoran de forma estable el sistema, por razones que el análisis permite explicar.
+Con técnicas de la materia y sin ningún modelo de lenguaje generativo, el sistema híbrido BM25 + embeddings con BM25 a medio peso alcanza un macro nDCG@10 de 0.2367 en 1a y 0.2610 en 1b en train, 2.2 y 2.5 veces el baseline oficial. La comprobación única en dev lo confirma (0.2519 y 0.2971), y allí el híbrido supera al denso solo de forma significativa en ambas subtareas. Las mayores ganancias vienen de limpiar la consulta y de añadir un recuperador semántico, no de modelar el tiempo. Clasificar el tipo de razonamiento, buscar vocabulario por clase, añadir formas temporales gruesas y estimar el periodo implícito con n-gramas y una cadena de Markov no mejoran de forma estable el sistema, por razones que el análisis permite explicar.
 
-Como trabajo futuro quedan: confirmar el híbrido en dev; penalizar las páginas bibliográficas (la señal más fuerte de O5); probar en todos los pasos de 1b el texto extra ``título. paso limpio'' en el brazo denso, que dio +0.005 ($p = 0.02$) como efecto secundario de K4; y, si se retoma TT0, elegir la fusión con validación cruzada en los dominios históricos.
+Como trabajo futuro quedan: penalizar las páginas bibliográficas (la señal más fuerte de O5); probar en todos los pasos de 1b el texto extra ``título. paso limpio'' en el brazo denso, que dio +0.005 ($p = 0.02$) como efecto secundario de K4; y, si se retoma TT0, elegir la fusión con validación cruzada en los dominios históricos.
 
 % -----------------------------------------------------------------------------
 \bibliographystyle{plainnat}

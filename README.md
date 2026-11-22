@@ -9,7 +9,7 @@ Proyecto final de la materia de **Procesamiento del Lenguaje Natural**. Trabaja 
 
 **Restricción del proyecto:** solo se usan técnicas vistas en clase. BM25 se incluye porque es el baseline oficial de la tarea y es una variante de TF-IDF (§1).
 
-**Reglas de trabajo:** todo se decide en **train**; dev queda reservado para una única comprobación final. Nunca se usan en la búsqueda el formato de los IDs de los documentos, las respuestas aceptadas (`gold_answers`) ni los metadatos `guidance`, que no estarán en test. Esos campos solo se usan para medir techos (oráculos) y para analizar resultados.
+**Reglas de trabajo:** todo se decide en **train**; dev se usó una sola vez, al final, con la configuración ya fijada (§2). Nunca se usan en la búsqueda el formato de los IDs de los documentos, las respuestas aceptadas (`gold_answers`) ni los metadatos `guidance`, que no estarán en test. Esos campos solo se usan para medir techos (oráculos) y para analizar resultados.
 
 ---
 
@@ -26,17 +26,20 @@ Proyecto final de la materia de **Procesamiento del Lenguaje Natural**. Trabaja 
 
 Además se usan técnicas estándar de evaluación y análisis: fusión de rankings con *Reciprocal Rank Fusion* (RRF), test pareado de aleatorización, validación cruzada y log-odds con prior de Dirichlet para comparar vocabularios.
 
-## 2. Resultados principales (train, macro nDCG@10)
+## 2. Resultados principales (macro nDCG@10)
 
-| Sistema | 1a | 1b |
-|---|---:|---:|
-| Baseline oficial (BM25 con la consulta cruda) | 0.1075 | 0.1024 |
-| BM25 con la mejor variante de consulta (sin modelos) | 0.1528 | 0.1660 |
-| Denso `bge-base` | 0.2277 | 0.2449 |
-| **Híbrido BM25 + denso** (RRF, BM25 con peso 0.5) | **0.2367** | **0.2610** |
+Todo se eligió en train. Las columnas de dev son una única corrida final, sin ajustar nada después.
+
+| Sistema | 1a train | 1a dev | 1b train | 1b dev |
+|---|---:|---:|---:|---:|
+| Baseline oficial (BM25 con la consulta cruda) | 0.1075 | 0.1147 | 0.1024 | 0.1177 |
+| BM25 con la mejor variante de consulta (sin modelos) | 0.1528 | 0.1716 | 0.1660 | 0.1838 |
+| Denso `bge-base` | 0.2277 | 0.2226 | 0.2449 | 0.2610 |
+| **Híbrido BM25 + denso** (RRF, BM25 con peso 0.5) | **0.2367** | **0.2519** | **0.2610** | **0.2971** |
 
 - **Preparar la consulta ya rinde mucho con BM25**: buscar también con el título (1a) o quitar al paso el verbo imperativo y las palabras meta (1b) sube +0.045 / +0.064 sin ningún modelo.
 - **Los embeddings duplican el baseline**, y el híbrido con BM25 a medio peso es la mejor primera etapa (2.2–2.5 veces el baseline).
+- **Dev confirma la progresión.** Cada paso mejora al anterior de forma significativa, y el híbrido supera al denso solo en las dos subtareas (+0.029 y +0.036, p < 0.001). En train esa mejora solo era significativa en 1b.
 - **Usar el tiempo o el tipo de razonamiento de forma explícita no mejora el híbrido**: ni clasificar el tipo de razonamiento para elegir la estrategia (O4), ni un vocabulario de documento por clase (O5), ni añadir la década y el siglo de las fechas de la consulta (K4), ni el perfil temporal implícito con n-gramas (TT0). El porqué está en cada sección.
 
 Detalle completo: [`RESULTADOS_EXPERIMENTOS.md`](RESULTADOS_EXPERIMENTOS.md).
@@ -48,7 +51,8 @@ Detalle completo: [`RESULTADOS_EXPERIMENTOS.md`](RESULTADOS_EXPERIMENTOS.md).
 | [`notebooks/EDA_EXPLICADO.md`](notebooks/EDA_EXPLICADO.md) | análisis exploratorio de los datos, explicado (notebook: [`eda_track1_tempo.ipynb`](notebooks/eda_track1_tempo.ipynb)) |
 | [`BASELINE.md`](BASELINE.md) | cómo funciona el baseline oficial y qué enfoques prueba el paper de TEMPO (notebook: [`baseline_track1_tempo.ipynb`](notebooks/baseline_track1_tempo.ipynb)) |
 | [`PLAN_EXPERIMENTOS.md`](PLAN_EXPERIMENTOS.md) | plan de experimentos: tipo de razonamiento, keywords y variantes de consulta |
-| [`RESULTADOS_EXPERIMENTOS.md`](RESULTADOS_EXPERIMENTOS.md) | resultados: variantes de consulta con BM25, oráculos, clasificación del razonamiento (O4, O5), denso, híbrido y K4 |
+| [`RESULTADOS_EXPERIMENTOS.md`](RESULTADOS_EXPERIMENTOS.md) | resultados: variantes de consulta con BM25, oráculos, clasificación del razonamiento (O4, O5), denso, híbrido, K4 y comprobación en dev |
+| [`reporte/`](reporte/) | reporte tipo paper: [`reporte.tex`](reporte/reporte.tex), [`reporte.pdf`](reporte/reporte.pdf) y [`reporte.docx`](reporte/reporte.docx), con su bibliografía y [`compilar.sh`](reporte/compilar.sh) |
 | [`RESULTADOS_PERFIL_TEMPORAL.md`](RESULTADOS_PERFIL_TEMPORAL.md) | perfil temporal implícito con n-gramas y cadenas de Markov (TT0) |
 | [`SETUP.md`](SETUP.md) | instalación del entorno y descarga del dataset |
 | [`plans/PLAN_EDA.md`](plans/PLAN_EDA.md) | plan del EDA |
@@ -90,6 +94,8 @@ Instalación y datos: [`SETUP.md`](SETUP.md). Después, por ejemplo:
 .venv/bin/python scripts/fuse_runs.py --subtrack 1a --weights 0.5 1 \
     --runs "bm25/rrf(limpia,titulo)" "bge-base/rrf(limpia,titulo)"         # híbrido
 ```
+
+Para la comprobación en dev se repiten los mismos comandos con `--split dev` y solo con las variantes finales (lista completa en [`RESULTADOS_EXPERIMENTOS.md`](RESULTADOS_EXPERIMENTOS.md) §2.12).
 
 Los runs se guardan en `outputs/exp/runs/` y cada experimento añade una fila a `outputs/exp/resultados.csv` (ninguno de los dos se sube a git).
 
