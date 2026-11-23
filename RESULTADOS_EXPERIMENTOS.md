@@ -103,9 +103,11 @@ Resumen de lo implementado de [`PLAN_EXPERIMENTOS.md`](PLAN_EXPERIMENTOS.md) y d
 | O1 | `rrf(limpia,respuesta)` | 0.0952 | −0.012 | sube R@1000 (0.696) pero baja el top-10 |
 | O2 | `normalizada` (INTENT/CLASS/ANCHORS) | 0.1128 | +0.005 (n.s.) | **las etiquetas temporales estructuradas no ayudan a BM25**, igual que en el paper |
 | O2 | `limpia+anclas` | 0.1141 | +0.007 (n.s.) | ídem |
-| O3 | `resumen` (query_summary de un LLM) | 0.1380 | +0.031 | una reescritura condensada ayuda… |
+| O3 | `resumen` (`query_summary`, escrito por GPT-4o) | 0.1380 | +0.031 | una reescritura condensada ayuda… |
 | O3 | `titulo+resumen` | 0.1470 | +0.039 | …pero **no supera al título solo (0.1500)** |
-| O3 | `rrf(limpia,plan)` | 0.1550 | +0.048 | ≈ `rrf(limpia,titulo)` (0.1528): el plan del LLM aporta +0.002 |
+| O3 | `rrf(limpia,plan)` | 0.1550 | +0.048 | ≈ `rrf(limpia,titulo)` (0.1528): el plan de GPT-4o aporta +0.002 |
+
+Los textos de O2 y O3 vienen de `guidance`: los generaron con GPT-4o los autores de TEMPO, con un prompt que solo recibe la consulta (paper de TEMPO, apéndice B.2, figura 10). Nosotros no ejecutamos ningún LLM.
 
 **Lectura:** para BM25, el techo de "reescritura con LLM" que dan los textos de `guidance` apenas supera la heurística del título. Lo que importa es **quitar ruido** a la consulta, no añadir texto. Estas conclusiones valen para BM25; el paper indica que los encoders densos, sobre todo los que siguen instrucciones, reaccionan distinto. O1–O3 con el denso están en §2.7.
 

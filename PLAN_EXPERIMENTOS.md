@@ -131,7 +131,7 @@ Usan información de train que no estará en test (`gold_answers`, `guidance`). 
 | O5 | ¿Hay keywords de documento específicas de cada clase? | por clase, log-odds (prior de Dirichlet) de términos en gold frente a hard negatives (top-50 de BM25 no gold de la misma consulta) | Semilla del diccionario (Fase 4) | El diccionario solo sirve como pistas de prompt, no como expansión |
 
 **Cuidados:**
-- `guidance` lo generó un LLM, posiblemente viendo los gold (el `retrieval_plan` trae `gold_ids` adjuntos). O2 y O3 pueden sobreestimar lo alcanzable: tratarlos como **cotas superiores**, no como estimaciones.
+- `guidance` lo generaron con GPT-4o los autores de TEMPO (apéndice B.2 del paper). Según el prompt publicado, el modelo solo ve la consulta, pero el `retrieval_plan` trae `gold_ids` adjuntos, así que no se puede descartar que el plan se ajustara a los gold. O2 y O3 pueden sobreestimar lo alcanzable: tratarlos como **cotas superiores**, no como estimaciones.
 - O4 se calcula con validación cruzada (elegir la mejor variante por clase en 4 folds y evaluar en el 5.º) para no sobreajustar la elección.
 
 ---
